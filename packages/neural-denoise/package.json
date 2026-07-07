@@ -1,0 +1,19 @@
+{
+  "name": "@audio/neural-denoise",
+  "version": "0.0.0",
+  "description": "Neural denoise — RNNoise / DeepFilterNet class speech enhancement",
+  "type": "module",
+  "sideEffects": false,
+  "private": true,
+  "keywords": [
+    "audio",
+    "ml",
+    "neural",
+    "denoise"
+  ],
+  "license": "MIT",
+  "author": "Dmitry Iv. <dfcreative@gmail.com>",
+  "engines": {
+    "node": ">=18"
+  }
+}

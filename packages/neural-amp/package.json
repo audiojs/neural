@@ -1,0 +1,19 @@
+{
+  "name": "@audio/neural-amp",
+  "version": "0.0.0",
+  "description": "Neural amp modeling — NAM-class capture playback",
+  "type": "module",
+  "sideEffects": false,
+  "private": true,
+  "keywords": [
+    "audio",
+    "ml",
+    "neural",
+    "amp"
+  ],
+  "license": "MIT",
+  "author": "Dmitry Iv. <dfcreative@gmail.com>",
+  "engines": {
+    "node": ">=18"
+  }
+}
