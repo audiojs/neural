@@ -1,0 +1,69 @@
+{
+  "name": "@audio/neural-align",
+  "version": "0.1.0",
+  "description": "Forced alignment — audio + known transcript → word/character timestamps (CTC trellis, wav2vec2 acoustic model)",
+  "type": "module",
+  "sideEffects": false,
+  "private": true,
+  "main": "align.js",
+  "exports": {
+    ".": {
+      "types": "./align.d.ts",
+      "default": "./align.js"
+    },
+    "./ctc": {
+      "types": "./ctc.d.ts",
+      "default": "./ctc.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "align.js",
+    "align.d.ts",
+    "ctc.js",
+    "ctc.d.ts"
+  ],
+  "types": "./align.d.ts",
+  "scripts": {
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "@audio/resample-sinc": "^1.1.2",
+    "@huggingface/transformers": "^4.2.0"
+  },
+  "peerDependencies": {
+    "@audio/subtitle": "*"
+  },
+  "peerDependenciesMeta": {
+    "@audio/subtitle": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "audio-lena": "^3.0.1",
+    "tst": "^9.4.0"
+  },
+  "keywords": [
+    "audio",
+    "ml",
+    "neural",
+    "alignment",
+    "forced-alignment",
+    "ctc",
+    "wav2vec2",
+    "karaoke",
+    "lrc",
+    "captions"
+  ],
+  "license": "MIT",
+  "author": "Dmitry Iv. <dfcreative@gmail.com>",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/audiojs/neural.git",
+    "directory": "packages/neural-align"
+  },
+  "funding": "https://github.com/sponsors/audiojs"
+}

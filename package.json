@@ -19,5 +19,8 @@
   "author": "Dmitry Iv. <dfcreative@gmail.com>",
   "engines": {
     "node": ">=18"
+  },
+  "scripts": {
+    "test": "npm test --workspaces --if-present"
   }
 }

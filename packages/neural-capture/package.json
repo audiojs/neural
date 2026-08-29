@@ -1,0 +1,55 @@
+{
+  "name": "@audio/neural-capture",
+  "version": "0.1.0",
+  "description": "Device capture — staged identifier: dry/wet pair → cheapest audiojs formula (IR → Hammerstein → …) with null-depth report",
+  "type": "module",
+  "sideEffects": false,
+  "private": true,
+  "main": "capture.js",
+  "exports": {
+    ".": "./capture.js",
+    "./probe": "./probe.js",
+    "./wh": "./wh.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "capture.js",
+    "probe.js",
+    "wh.js",
+    "math.js",
+    "index.d.ts",
+    "probe.d.ts",
+    "wh.d.ts"
+  ],
+  "scripts": {
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "@audio/synth-chirp": "^1.1.0",
+    "fourier-transform": "^2.2.0"
+  },
+  "devDependencies": {
+    "tst": "^9.0.0"
+  },
+  "keywords": [
+    "audio",
+    "dsp",
+    "capture",
+    "system-identification",
+    "amp",
+    "hammerstein",
+    "deconvolution"
+  ],
+  "license": "MIT",
+  "author": "Dmitry Iv. <dfcreative@gmail.com>",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/audiojs/neural.git",
+    "directory": "packages/neural-capture"
+  },
+  "types": "index.d.ts",
+  "funding": "https://github.com/sponsors/audiojs"
+}

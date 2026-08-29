@@ -1,10 +1,25 @@
 {
   "name": "@audio/neural-amp",
-  "version": "0.0.0",
-  "description": "Neural amp modeling — NAM-class capture playback",
+  "version": "0.1.0",
+  "description": "Neural amp modeling — NAM (.nam) WaveNet capture playback, dependency-free",
   "type": "module",
   "sideEffects": false,
   "private": true,
+  "main": "nam.js",
+  "exports": {
+    ".": "./nam.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "nam.js",
+    "index.d.ts"
+  ],
+  "scripts": {
+    "test": "node test.js"
+  },
+  "devDependencies": {
+    "tst": "^9.4.0"
+  },
   "keywords": [
     "audio",
     "ml",

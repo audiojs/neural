@@ -1,51 +1,56 @@
 {
-  "name": "@audio/neural-runtime",
+  "name": "@audio/neural-diarize",
   "version": "0.1.0",
-  "description": "Model inference adapter — ONNX Runtime (Node/wasm/webgpu) behind one worklet-ready interface",
+  "description": "Speaker diarization — who spoke when (WavLM x-vector embeddings, agglomerative clustering)",
   "type": "module",
   "sideEffects": false,
   "private": true,
-  "main": "runtime.js",
+  "main": "diarize.js",
   "types": "./index.d.ts",
   "exports": {
     ".": {
       "types": "./index.d.ts",
-      "default": "./runtime.js"
+      "default": "./diarize.js"
     },
     "./package.json": "./package.json"
   },
   "files": [
-    "runtime.js",
+    "diarize.js",
     "index.d.ts"
   ],
+  "scripts": {
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "@audio/resample-sinc": "^1.1.2",
+    "@audio/vad": "^1.0.1",
+    "@huggingface/transformers": "^4.2.0"
+  },
   "peerDependencies": {
-    "onnxruntime-node": ">=1.14.0",
-    "onnxruntime-web": ">=1.14.0"
+    "@audio/subtitle": "*"
   },
   "peerDependenciesMeta": {
-    "onnxruntime-node": {
-      "optional": true
-    },
-    "onnxruntime-web": {
+    "@audio/subtitle": {
       "optional": true
     }
   },
   "devDependencies": {
-    "onnxruntime-node": "^1.29.0",
+    "@audio/shift-psola": "^1.0.3",
+    "audio-lena": "^3.0.1",
     "tst": "^9.4.0"
-  },
-  "scripts": {
-    "test": "node test.js"
   },
   "keywords": [
     "audio",
     "ml",
     "neural",
-    "onnx",
-    "onnxruntime",
-    "inference",
-    "runtime",
-    "worklet"
+    "diarization",
+    "speaker",
+    "speaker-verification",
+    "wavlm",
+    "x-vector",
+    "clustering",
+    "transformers.js",
+    "onnx"
   ],
   "license": "MIT",
   "author": "Dmitry Iv. <dfcreative@gmail.com>",
@@ -55,7 +60,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/audiojs/neural.git",
-    "directory": "packages/neural-runtime"
+    "directory": "packages/neural-diarize"
   },
   "funding": "https://github.com/sponsors/audiojs"
 }

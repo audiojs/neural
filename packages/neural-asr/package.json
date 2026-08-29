@@ -1,0 +1,64 @@
+{
+  "name": "@audio/neural-asr",
+  "version": "0.1.0",
+  "description": "Speech-to-text — Whisper (OpenAI, MIT) running locally via transformers.js/ONNX Runtime, in Node and the browser",
+  "type": "module",
+  "sideEffects": false,
+  "private": true,
+  "main": "asr.js",
+  "exports": {
+    ".": "./asr.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "asr.js",
+    "index.d.ts"
+  ],
+  "scripts": {
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "@audio/resample-sinc": "^1.1.2",
+    "@huggingface/transformers": "^4.2.0"
+  },
+  "peerDependencies": {
+    "@audio/subtitle": "^0.1.0",
+    "@audio/vad": "^1.0.1"
+  },
+  "peerDependenciesMeta": {
+    "@audio/subtitle": {
+      "optional": true
+    },
+    "@audio/vad": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "audio-lena": "^3.0.1",
+    "tst": "^9.4.0",
+    "@audio/vad": "^1.0.1"
+  },
+  "keywords": [
+    "audio",
+    "ml",
+    "neural",
+    "asr",
+    "speech-to-text",
+    "whisper",
+    "transcription",
+    "transformers.js",
+    "onnx"
+  ],
+  "license": "MIT",
+  "author": "Dmitry Iv. <dfcreative@gmail.com>",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/audiojs/neural.git",
+    "directory": "packages/neural-asr"
+  },
+  "types": "index.d.ts",
+  "funding": "https://github.com/sponsors/audiojs"
+}

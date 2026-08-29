@@ -1,44 +1,42 @@
 {
-  "name": "@audio/neural-separate",
+  "name": "@audio/neural-tts",
   "version": "0.1.0",
-  "description": "Source separation (stems) — Open-Unmix-class spectrogram masking + multichannel Wiener refinement, model-agnostic ONNX",
+  "description": "Text to speech — SpeechT5 (and VITS/mms-tts-eng) running locally via transformers.js/ONNX Runtime, in Node and the browser",
   "type": "module",
   "sideEffects": false,
   "private": true,
-  "main": "separate.js",
+  "main": "tts.js",
   "types": "./index.d.ts",
   "exports": {
     ".": {
       "types": "./index.d.ts",
-      "default": "./separate.js"
+      "default": "./tts.js"
     },
     "./package.json": "./package.json"
   },
   "files": [
-    "separate.js",
-    "index.d.ts",
-    "scripts/export-openunmix.py"
+    "tts.js",
+    "index.d.ts"
   ],
-  "dependencies": {
-    "@audio/neural-runtime": "^0.1.0",
-    "@audio/resample-sinc": "^1.1.2",
-    "fourier-transform": "^2.4.1"
-  },
-  "devDependencies": {
-    "onnxruntime-node": "^1.29.0",
-    "tst": "^9.4.0"
-  },
   "scripts": {
     "test": "node test.js"
+  },
+  "dependencies": {
+    "@audio/resample-sinc": "^1.1.2",
+    "@huggingface/transformers": "^4.2.0"
+  },
+  "devDependencies": {
+    "tst": "^9.4.0"
   },
   "keywords": [
     "audio",
     "ml",
     "neural",
-    "separate",
-    "stems",
-    "open-unmix",
-    "wiener",
+    "tts",
+    "text-to-speech",
+    "speecht5",
+    "vits",
+    "transformers.js",
     "onnx"
   ],
   "license": "MIT",
@@ -49,7 +47,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/audiojs/neural.git",
-    "directory": "packages/neural-separate"
+    "directory": "packages/neural-tts"
   },
   "funding": "https://github.com/sponsors/audiojs"
 }

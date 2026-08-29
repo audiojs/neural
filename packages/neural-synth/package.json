@@ -1,0 +1,50 @@
+{
+  "name": "@audio/neural-synth",
+  "version": "0.1.0",
+  "description": "Sound matching — configure any knob-synth to reproduce a target sound (CMA-ES over multi-scale spectral loss)",
+  "type": "module",
+  "sideEffects": false,
+  "private": true,
+  "main": "match.js",
+  "exports": {
+    ".": "./match.js",
+    "./loss": "./loss.js",
+    "./cmaes": "./cmaes.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "match.js",
+    "loss.js",
+    "cmaes.js",
+    "index.d.ts"
+  ],
+  "scripts": {
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "fourier-transform": "^2.2.0"
+  },
+  "devDependencies": {
+    "tst": "^9.4.0"
+  },
+  "keywords": [
+    "audio",
+    "synth",
+    "sound-matching",
+    "automatic-synthesizer-programming",
+    "cma-es",
+    "spectral-loss"
+  ],
+  "license": "MIT",
+  "author": "Dmitry Iv. <dfcreative@gmail.com>",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/audiojs/neural.git",
+    "directory": "packages/neural-synth"
+  },
+  "types": "index.d.ts",
+  "funding": "https://github.com/sponsors/audiojs"
+}
