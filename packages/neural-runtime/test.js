@@ -32,6 +32,13 @@ test('load(bytes) — run() matches the hand-computed relu(x@W+b)', async () => 
   session.free()
 })
 
+test('load: sessionOptions pass through to InferenceSession.create; the run matches', async () => {
+  let session = await load(LINEAR, { sessionOptions: { enableCpuMemArena: false, enableMemPattern: false, graphOptimizationLevel: 'basic' } })
+  let out = await session.run({ x: tensor(Float32Array.from([1, 2]), [1, 2]) })
+  for (let i = 0; i < 3; i++) almost(out.y.data[i], EXPECTED[i], 1e-6, `y[${i}]`)
+  session.free()
+})
+
 test('load — file:// URL loads and runs', async () => {
   let session = await load(LINEAR_URL.href)
   let out = await session.run({ x: tensor(Float32Array.from([1, 2]), [1, 2]) })

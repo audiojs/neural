@@ -1,0 +1,67 @@
+{
+  "name": "@audio/neural-transcribe",
+  "version": "0.1.0",
+  "description": "Polyphonic note transcription with pitch bends: Spotify's Basic Pitch (ICASSP 2022) through ONNX Runtime, in Node and the browser",
+  "type": "module",
+  "sideEffects": false,
+  "main": "transcribe.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./transcribe.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "transcribe.js",
+    "index.d.ts",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "dependencies": {
+    "@audio/neural-runtime": "^0.1.0",
+    "@audio/resample-sinc": "^1.2.0"
+  },
+  "devDependencies": {
+    "@audio/mir-transcribe": "^1.1.4",
+    "@audio/synth-fm": "^0.2.1",
+    "@audio/synth-pluck": "^1.1.3",
+    "@audio/synth-poly": "^1.2.1",
+    "@audio/synth-sfx": "^1.1.3",
+    "@audio/synth-voice": "^1.2.0",
+    "onnxruntime-node": "^1.29.0",
+    "tst": "^9.4.0"
+  },
+  "scripts": {
+    "test": "node test.js"
+  },
+  "keywords": [
+    "audio",
+    "ml",
+    "neural",
+    "transcription",
+    "polyphonic",
+    "pitch-bend",
+    "basic-pitch",
+    "midi",
+    "onnx"
+  ],
+  "license": "Apache-2.0",
+  "author": "Dmitry Iv. <dfcreative@gmail.com>",
+  "contributors": [
+    "Spotify AB (Basic Pitch, Copyright 2022)"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/audiojs/neural.git",
+    "directory": "packages/neural-transcribe"
+  },
+  "funding": "https://github.com/sponsors/audiojs",
+  "publishConfig": {
+    "access": "public"
+  }
+}

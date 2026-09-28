@@ -61,7 +61,7 @@ Neither `onnxruntime-node` nor `onnxruntime-web` is a hard dependency — both a
 
 `Session`: `{ run(feeds, outputNames?) → Promise<Record<string, Tensor>>, inputs, outputs, backend, free() }`.
 
-`load(model, opts)` — `opts`: `{ backend = 'auto', threads?, cache = true, progress?, fetch?, executionProviders?, graphOptimizationLevel?: 'all' | 'basic' | 'disabled', logLevel?, wasmPaths? }`.
+`load(model, opts)` — `opts`: `{ backend = 'auto', threads?, cache = true, progress?, fetch?, executionProviders?, graphOptimizationLevel?: 'all' | 'basic' | 'disabled', sessionOptions?, logLevel?, wasmPaths? }`. `sessionOptions` passes any other `ort.InferenceSession` option through; `{ enableCpuMemArena: false, enableMemPattern: false }` returns activation memory after each run instead of pooling it (Hybrid Transformer Demucs, one 7.8 s segment in onnxruntime-node 1.30: peak RSS 2.7 GB against 3.2 GB).
 
 **Not for**: choosing or shipping a model — this package has no model zoo, no bundled weights, and no opinion on architecture. `neural-amp` and the rest of the lane bring the model; this loads and runs it.
 

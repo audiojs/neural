@@ -1,10 +1,9 @@
 {
   "name": "@audio/neural-separate",
   "version": "0.1.0",
-  "description": "Source separation (stems) — Open-Unmix-class spectrogram masking + multichannel Wiener refinement, model-agnostic ONNX",
+  "description": "Source separation (stems): Open-Unmix-class spectrogram masking + multichannel Wiener refinement, Hybrid Transformer Demucs, model-agnostic ONNX",
   "type": "module",
   "sideEffects": false,
-  "private": true,
   "main": "separate.js",
   "types": "./index.d.ts",
   "exports": {
@@ -17,7 +16,10 @@
   "files": [
     "separate.js",
     "index.d.ts",
-    "scripts/export-openunmix.py"
+    "scripts/export-openunmix.py",
+    "scripts/export-htdemucs.py",
+    "scripts/reference.py",
+    "NOTICE"
   ],
   "dependencies": {
     "@audio/neural-runtime": "^0.1.0",
@@ -38,6 +40,7 @@
     "separate",
     "stems",
     "open-unmix",
+    "demucs",
     "wiener",
     "onnx"
   ],
@@ -51,5 +54,8 @@
     "url": "git+https://github.com/audiojs/neural.git",
     "directory": "packages/neural-separate"
   },
-  "funding": "https://github.com/sponsors/audiojs"
+  "funding": "https://github.com/sponsors/audiojs",
+  "publishConfig": {
+    "access": "public"
+  }
 }

@@ -110,7 +110,9 @@ export async function load(model, opts = {}) {
   if (opts.threads !== undefined && ort.env?.wasm) ort.env.wasm.numThreads = opts.threads
   if (opts.logLevel !== undefined && ort.env) ort.env.logLevel = opts.logLevel
 
-  let sessionOpts = {}
+  // any other ort.InferenceSession.SessionOptions pass through (e.g. enableCpuMemArena: false,
+  // which gives activation memory back after each run instead of keeping it pooled)
+  let sessionOpts = { ...opts.sessionOptions }
   let eps = opts.executionProviders ?? (backend === 'node' ? undefined : [backend])
   if (eps) sessionOpts.executionProviders = eps
   if (opts.graphOptimizationLevel) sessionOpts.graphOptimizationLevel = opts.graphOptimizationLevel

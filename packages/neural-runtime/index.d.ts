@@ -40,6 +40,8 @@ export interface LoadOptions extends FetchOptions {
   /** passthrough to ort.InferenceSession.create's executionProviders */
   executionProviders?: string[]
   graphOptimizationLevel?: 'all' | 'basic' | 'disabled'
+  /** other ort.InferenceSession session options, passed through (e.g. `{ enableCpuMemArena: false }`) */
+  sessionOptions?: Record<string, unknown>
   /** passthrough to ort.env.logLevel */
   logLevel?: 'verbose' | 'info' | 'warning' | 'error' | 'fatal'
   /** passthrough to ort.env.wasm.wasmPaths — where onnxruntime-web loads its .wasm from; required in a worklet, which can't resolve a relative default */

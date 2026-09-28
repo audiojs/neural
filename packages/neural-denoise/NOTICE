@@ -1,0 +1,43 @@
+@audio/neural-denoise
+Copyright 2026 Dmitry Iv. and audiojs contributors
+
+This product includes a JavaScript translation of RNNoise (https://gitlab.xiph.org/xiph/rnnoise,
+mirrored at https://github.com/xiph/rnnoise), BSD-3-Clause, at commit 70f1d25. Translated files:
+src/{denoise,rnn,nnet,pitch,celt_lpc,kiss_fft,parse_lpcnet_weights,dump_rnnoise_tables}.c and
+src/{nnet_arch,vec,_kiss_fft_guts}.h, into rnnoise.js, fft.js and gemv.wat (vec.h's sparse_cgemv8x4 in
+WebAssembly SIMD). The changes are listed in their headers. The copyright holders and the license are in LICENSE.
+
+rnnoise.bin is RNNoise's default model (model_version 0a8755f8, rnnoise_data-0a8755f8….tar.gz from
+media.xiph.org, trained by Jean-Marc Valin on the public datasets listed in upstream's datasets.txt)
+in upstream's own weight-blob format, written by upstream's dump_weights_blob (src/write_weights.c)
+built with the default configuration (DISABLE_DEBUG_FLOAT). It is distributed under the same
+BSD-3-Clause terms as the RNNoise source it is compiled from.
+
+This product includes a JavaScript translation of parts of DeepFilterNet
+(https://github.com/Rikorose/DeepFilterNet) at commit d375b2d, dual-licensed MIT OR Apache-2.0,
+used here under the MIT License: libDF/src/lib.rs and transforms.rs (STFT framing, ERB filterbank,
+feature normalizations) and DeepFilterNet/df/{enhance,deepfilternet3,modules,multiframe}.py
+(enhance(), the lookahead shift, the ERB mask, the deep filter), into deepfilter.js.
+
+    MIT License, Copyright (c) 2021 Hendrik Schröter
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy of this
+    software and associated documentation files (the "Software"), to deal in the Software
+    without restriction, including without limitation the rights to use, copy, modify, merge,
+    publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
+    to whom the Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all copies or
+    substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+    INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+    PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
+    FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+    OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+
+The DeepFilterNet3 model is not included. deepfilter.js downloads it on first use from the
+DeepFilterNet repository at the same commit (models/DeepFilterNet3_onnx.tar.gz). Upstream's
+README licenses "all code in this repository" as MIT OR Apache-2.0 and states no separate terms
+for the model files; see README.md, "Licenses".

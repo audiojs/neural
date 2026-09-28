@@ -1,0 +1,42 @@
+{
+	"commit": "70f1d256acd4b34a572f999a05c87bf00b67730d",
+	"model": "0a8755f8e2d834eff6a54714ecc7d75f9932e845df35f8b59bc52a7cfe6e8b37",
+	"blob": "1ad07b428be34c74d9678d05b3c387b73ccf0e6203a1a5f9ce58689b30b303c8",
+	"little": "69fbd33c10d90e294673427f71fc4a592398d847efb2db19c99484f88b9343e4",
+	"build": "cc -O2 -ffp-contract=off -DDISABLE_NEON",
+	"cases": {
+		"lena": {
+			"frames": 1127,
+			"regular": {
+				"out": "f910f7cc970c2bc982f1b5f86d9710a3c1f49e39595fc4d993460a4c10604258",
+				"vad": "84608a42a7739e111c06183c4053490120551a564a45e88ce0159f84eaaaf468"
+			},
+			"little": {
+				"out": "15a039b314e78813fb7b428a412884f08e89bdee39ca67a253c9ae24306e1aa8",
+				"vad": "62eb86b2e1e604e4d415b1ba08c0ee3dd41cff06d849f355e91b59df66fd172f"
+			}
+		},
+		"lena+noise": {
+			"frames": 1127,
+			"regular": {
+				"out": "f108a1d2ca606aa0ffbdd2dfef8ba62683afedebb8ba433b224fbbef5ce5f053",
+				"vad": "7ceaf453c91901f73ea1a555d504b3cc998baeede11ab485d25f5af067948978"
+			},
+			"little": {
+				"out": "de45fea13b2bb822cfc4a2f1aeb69c7d6185a8b6e154d21a43915481336b8100",
+				"vad": "bfe79d6ea5337e69fc2c71dae8a324ebade5af03165efaef5f012aa1c307f20f"
+			}
+		},
+		"quiet": {
+			"frames": 300,
+			"regular": {
+				"out": "cb44db3fd77fe0fa72a98863384040232469cb16474274b9541d9bb5e7f7acbe",
+				"vad": "d7e137923bdb0b46057f66050306b387dca47c4b25ff871876c6162da140d0d9"
+			},
+			"little": {
+				"out": "cb0687405fcc82859e0ddb85b98b00986f0a989ec7d8b31b72c4f6f4a9f34267",
+				"vad": "e266204c7ca917381017a6ddee2b7502c1a6f9ca4df6a9f5de548957c0dfbab0"
+			}
+		}
+	}
+}

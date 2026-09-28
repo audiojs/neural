@@ -25,10 +25,12 @@
 - [ ] Browser `.nam` player demo
 
 ## M5 — Pretrained: denoise / dereverb
-- [ ] Weights license audit (RNNoise, DeepFilterNet variants, Demucs) before any promise
-- [ ] `neural-denoise` worklet: RNNoise baseline → DeepFilterNet ceiling
+- [x] Weights license audit (RNNoise, DeepFilterNet variants, Demucs) before any promise. Demucs done: its weights are "not covered by the MIT license, and are provided only for scientific purposes" (the author, facebookresearch/demucs#327, #508); Open-Unmix umxhq weights are MIT (Zenodo 3370489). RNNoise: BSD-3-Clause, model 0a8755f8 bundled in `neural-denoise`. DeepFilterNet 1–3: code MIT OR Apache-2.0, weight terms unconfirmed (issues #697, #700, #709, #712 unanswered): fetched from the repo at d375b2d, never bundled (table in `neural-denoise` README)
+- [x] `neural-denoise` worklet: RNNoise baseline → DeepFilterNet ceiling. RNNoise bit-exact to upstream C; its worklet runs live in Chromium at 0.32 ms per 10 ms frame (underruns seen only with the machine oversubscribed, the no-worklet control underran too; an idle-machine run is still owed); DeepFilterNet3 offline and chunked, matching Python
+- [ ] DeepFilterNet3 stateful re-export (GRU states and conv buffers as graph I/O): exact chunking, and live DeepFilterNet3 in a worker
+- [ ] DeepFilterNet3 in the browser: measure onnxruntime-web wasm and WebGPU
 - [ ] Dereverb: pick/audit model (DeepFilterNet3 handles some; else dedicated late-reverb suppressor)
-- [ ] Differentiate vs sapphi-red/web-noise-suppressor (quality + audiojs integration)
+- [x] Differentiate vs sapphi-red/web-noise-suppressor (quality + audiojs integration): it wraps shiguredo's 2022 emscripten RNNoise (not measured here); ours runs the current model without requiring WebAssembly, bit-exact, and adds DeepFilterNet3 (VoiceBank+DEMAND PESQ 3.16, against 2.46 for RNNoise with a 20 dB limit)
 
 ## M6 — Synth matching (automatic synthesizer programming — for mel)
 - [x] Synth interface: `match(render, target, {bounds, budget})` — param vector → offline render fn, any knob-synth qualifies (`neural-synth`)

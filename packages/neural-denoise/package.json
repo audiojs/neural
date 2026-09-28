@@ -1,19 +1,79 @@
 {
   "name": "@audio/neural-denoise",
-  "version": "0.0.0",
-  "description": "Neural denoise — RNNoise / DeepFilterNet class speech enhancement",
+  "version": "0.1.0",
+  "description": "Neural speech enhancement: RNNoise (Valin 2018) in pure JS, bit-exact to its C, weights bundled; DeepFilterNet3 through ONNX Runtime, matching the Python original",
   "type": "module",
   "sideEffects": false,
-  "private": true,
+  "main": "denoise.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./denoise.js"
+    },
+    "./audio": {
+      "types": "./audio.d.ts",
+      "default": "./audio.js"
+    },
+    "./worklet": "./worklet.js",
+    "./rnnoise.bin": "./rnnoise.bin",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "denoise.js",
+    "audio.js",
+    "rnnoise.js",
+    "deepfilter.js",
+    "fft.js",
+    "worklet.js",
+    "rnnoise.bin",
+    "gemv.wat",
+    "index.d.ts",
+    "LICENSE",
+    "NOTICE",
+    "audio.d.ts"
+  ],
+  "dependencies": {
+    "@audio/neural-runtime": "^0.1.0",
+    "@audio/resample-sinc": "^1.2.0"
+  },
+  "devDependencies": {
+    "audio-lena": "^3.0.1",
+    "onnxruntime-node": "^1.29.0",
+    "tst": "^9.4.0"
+  },
+  "scripts": {
+    "test": "node test.js"
+  },
   "keywords": [
     "audio",
     "ml",
     "neural",
-    "denoise"
+    "denoise",
+    "noise-suppression",
+    "speech-enhancement",
+    "rnnoise",
+    "deepfilternet",
+    "audioworklet",
+    "onnx"
   ],
-  "license": "MIT",
+  "license": "BSD-3-Clause AND MIT",
   "author": "Dmitry Iv. <dfcreative@gmail.com>",
+  "contributors": [
+    "Jean-Marc Valin, Xiph.Org Foundation, Mozilla, Amazon and the RNNoise authors (RNNoise)",
+    "Hendrik Schröter (DeepFilterNet)"
+  ],
+  "audio": "./audio.js",
   "engines": {
     "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/audiojs/neural.git",
+    "directory": "packages/neural-denoise"
+  },
+  "funding": "https://github.com/sponsors/audiojs",
+  "publishConfig": {
+    "access": "public"
   }
 }

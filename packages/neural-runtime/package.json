@@ -4,7 +4,6 @@
   "description": "Model inference adapter — ONNX Runtime (Node/wasm/webgpu) behind one worklet-ready interface",
   "type": "module",
   "sideEffects": false,
-  "private": true,
   "main": "runtime.js",
   "types": "./index.d.ts",
   "exports": {
@@ -57,5 +56,8 @@
     "url": "git+https://github.com/audiojs/neural.git",
     "directory": "packages/neural-runtime"
   },
-  "funding": "https://github.com/sponsors/audiojs"
+  "funding": "https://github.com/sponsors/audiojs",
+  "publishConfig": {
+    "access": "public"
+  }
 }

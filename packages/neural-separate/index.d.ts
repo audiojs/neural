@@ -1,7 +1,7 @@
 /**
- * Source separation (stems) — Open-Unmix-class spectrogram masking models
- * (Stöter, Uhlich, Liutkus, Mitsufuji, JOSS 2019) plus Demucs-class waveform
- * models, run through @audio/neural-runtime's model-agnostic ONNX adapter.
+ * Source separation (stems) through @audio/neural-runtime's ONNX adapter: Open-Unmix-class
+ * spectrogram models (Stöter, Uhlich, Liutkus, Mitsufuji, JOSS 2019), Hybrid Transformer Demucs
+ * (Rouard, Massa, Défossez, ICASSP 2023) with STFT and iSTFT outside the graph, and waveform graphs.
  */
 
 /** Mono duplicates internally; multichannel arrays must share the same length. */
@@ -10,20 +10,41 @@ export type AudioInput = Float32Array[] | { channelData: Float32Array[]; sampleR
 /** A model spec resolvable by @audio/neural-runtime's load(): URL string or raw ONNX bytes. */
 export type ModelSpec = string | Uint8Array
 
+/** Presets whose files the export scripts write: <weights>/<name>/<target>.onnx or <weights>/<name>/<name>.onnx */
+export type ModelName = 'umxhq' | 'htdemucs' | 'htdemucs_ft'
+
+/** One graph whose output stacks several sources on its S axis */
+export type MultiGraph = { url: ModelSpec; targets: string[] }
+
 export type ModelOption =
+	| ModelName
 	| ModelSpec // single target, named 'stem'
-	| Record<string, ModelSpec> // one ONNX graph per target — Open-Unmix's own layout
-	| { url: ModelSpec; targets: string[] } // one multi-target graph, output stacks a target axis
+	| Record<string, ModelSpec | MultiGraph> // one graph per target (Open-Unmix's layout); a multi-source graph contributes its own target
+	| MultiGraph
 
 export type ModelType =
 	| 'openunmix' // target model outputs the estimated magnitude directly
 	| 'mask' // target model outputs a [0,1] mask; multiplied by the mixture magnitude
-	| 'waveform' // Demucs-class: [1,C,N] waveform in, [1,S,C,N] stacked waveforms out
+	| 'hybrid' // demucs.onnx contract: mix [1,C,L] + CaC spectrogram [1,2C,F,T] in; [1,S,2C,F,T] + [1,S,C,L] out
+	| 'waveform' // Demucs v2-class: [1,C,N] waveform in, [1,S,C,N] stacked waveforms out
+
+export interface ModelPreset {
+	modelType: ModelType
+	sampleRate: number
+	/** in the order stems come back */
+	targets: string[]
+	/** one graph per target (<target>.onnx), else one graph for all (<name>.onnx) */
+	perTarget?: boolean
+}
+
+/** Model presets by name */
+export const models: Record<ModelName, ModelPreset>
 
 /** A neural-runtime-shaped session — enough of it to drive separate() with a test double. */
 export interface Session {
 	run(feeds: Record<string, { data: Float32Array; dims: number[]; type: string }>): Promise<Record<string, { data: Float32Array; dims: number[] }>>
-	inputs?: { name: string }[]
+	/** 'hybrid' reads its segment length off inputs[0].dims[2] when declared */
+	inputs?: { name: string; dims?: number[] }[]
 	outputs?: { name: string }[]
 	free?(): void
 }
@@ -32,18 +53,27 @@ export interface SeparateOptions {
 	/** required unless audio is the { channelData, sampleRate } form */
 	sampleRate?: number
 	model: ModelOption
+	/** ignored for presets, which know theirs (default 'openunmix') */
 	modelType?: ModelType
-	/** iterations of multichannel Wiener EM refinement (default 1); 0 = raw masks. Ignored for modelType 'waveform'. */
+	/** subset of the model's targets to return; spectral models skip the other graphs, and one target runs Wiener EM against the residual */
+	targets?: string[]
+	/** where a preset's files are: URL, or a directory in Node (default $AUDIO_NEURAL_CACHE or ~/.cache/audiojs/neural) */
+	weights?: string
+	/** iterations of multichannel Wiener EM refinement (default 1); 0 = raw masks. Ignored for modelType 'hybrid' and 'waveform'. */
 	wiener?: number
 	/** wienerFilter's softmask option (default false, matching open-unmix-pytorch) */
 	softmask?: boolean
 	/** wienerFilter's eps (default 1e-10) */
 	eps?: number
-	/** chunk length in seconds (default 30) */
+	/** frames per Wiener EM window (default 300, open-unmix Separator's wiener_win_len) */
+	wienerWindow?: number
+	/** 'hybrid': segment length in samples when the graph does not declare it (default 343980, htdemucs's 7.8 s) */
+	segment?: number
+	/** 'openunmix' | 'mask' | 'waveform': chunk length in seconds (default 30) */
 	chunk?: number
 	/** crossfade overlap in seconds between chunks (default 2); must be < chunk */
 	overlap?: number
-	/** resample to this rate for model inference; output is resampled back to the input rate (default: input rate, no resampling) */
+	/** resample to this rate for model inference, stems back to the input rate (default: the preset's rate, else the input's) */
 	targetRate?: number
 	/** STFT size for the spectral pipeline (default 4096, Open-Unmix's n_fft) */
 	n?: number

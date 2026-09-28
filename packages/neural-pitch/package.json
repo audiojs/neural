@@ -1,0 +1,59 @@
+{
+  "name": "@audio/neural-pitch",
+  "version": "0.1.0",
+  "description": "Monophonic pitch posterior and voicing from a small transposition-equivariant network with MIT weights, in plain JavaScript; a stage 1 for @audio/pitch-pyin's HMM and note model",
+  "type": "module",
+  "sideEffects": false,
+  "main": "pitch.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./pitch.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "pitch.js",
+    "model.js",
+    "features.js",
+    "weights.js",
+    "index.d.ts"
+  ],
+  "dependencies": {
+    "fourier-transform": "^2.4.1"
+  },
+  "devDependencies": {
+    "@audio/pitch-pyin": "^1.0.1",
+    "tst": "^9.4.0"
+  },
+  "scripts": {
+    "test": "node test.js"
+  },
+  "keywords": [
+    "audio",
+    "ml",
+    "neural",
+    "pitch",
+    "pitch-detection",
+    "f0",
+    "pyin",
+    "pesto",
+    "equivariant",
+    "singing"
+  ],
+  "license": "MIT",
+  "author": "Dmitry Iv. <dfcreative@gmail.com>",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/audiojs/neural.git",
+    "directory": "packages/neural-pitch"
+  },
+  "funding": "https://github.com/sponsors/audiojs",
+  "publishConfig": {
+    "access": "public"
+  }
+}
