@@ -24,7 +24,7 @@
     "fourier-transform": "^2.4.1"
   },
   "devDependencies": {
-    "@audio/pitch-pyin": "^1.0.1",
+    "@audio/pitch-pyin": "^2.0.0",
     "tst": "^9.4.0"
   },
   "scripts": {
