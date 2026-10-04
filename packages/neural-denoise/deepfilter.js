@@ -15,20 +15,26 @@
 // activations per second of audio. Each chunk's run starts `warmup` frames early from zero GRU state
 // (those outputs dropped) and continues `fade` frames past its end, where the next chunk crossfades in
 // (raised cosine). The GRUs keep a long memory of their start, so chunked output is another valid
-// trajectory, not the whole-file one; the STFT and the features stay exact across chunks.
+// trajectory, not the whole-file one (40 to 55 dB SNR from it on a 60 s narration; longer warm-ups don't
+// converge); the STFT and the features stay exact across chunks.
+//
+// Added, for denoise(): the network can hear its input at another level (`gain`, its features only: they are
+// not level-free, the ERB means start at fixed dB and the complex features scale with the root of the level),
+// and a voice guard (`voice`) keeps the sustained voicing it takes for noise: held sung notes, chant.
 
 import { load, tensor, fetchModel } from '@audio/neural-runtime'
 import { WINDOW, rfft, irfft, N as FFT_N, HOP as FFT_HOP, BINS } from './fft.js'
+import { pitch } from './rnnoise.js'
 
 const f = Math.fround
 
 // models/DeepFilterNet3_onnx.tar.gz at d375b2d (7,983,136 bytes, sha256 c94d91f7…): enc, erb_dec, df_dec, config.ini
 export const MODEL = 'https://raw.githubusercontent.com/Rikorose/DeepFilterNet/d375b2d8309e0935d165700c91da9de862a99c31/models/DeepFilterNet3_onnx.tar.gz'
 
-// The attenuation limit, dB, that denoise() applies to this model unless given one (0: none, upstream's
-// output). Unlimited, it takes the pauses of ten home narrations as low as -152 dBFS, the digital silence
-// ACX Check flags; limited to 12 dB, they keep -91 to -57 dBFS at the same DNSMOS (README, Accuracy).
-export const LIMIT = 12
+// The attenuation limit, dB, that denoise() applies to this model unless given one (0: none): the most before the
+// voice itself suffers. On VoiceBank+DEMAND, DNSMOS SIG holds from 12 to 18 dB and falls past it, BAK and PESQ
+// rise; unlimited, the pauses of home narrations fall to digital silence (README, Accuracy).
+export const LIMIT = 18
 
 const isNode = typeof process !== 'undefined' && !!process.versions?.node
 
@@ -114,11 +120,41 @@ const linspace = (a, b, n) => { let step = f(f(f(b) - f(a)) / (n - 1)); return F
 
 // ------------------------------------------------ enhance
 
-// enhance(x, net, opts) → Float32Array: one channel at 48 kHz, as df.enhance.enhance(model, state, x, pad=True)
-export async function enhance(x, net, { limit, chunk = 1000, warmup = 300, fade = 50 } = {}) {
+// voicing(x, T, hop) → { period, on }: per frame, RNNoise's pitch period over the frame's 20 ms window, and `on`
+// inside sustained voicing: runs of 0.3 s or more whose normalized correlation at the period is 0.45 or more
+// (Praat's voicing threshold, Boersma 1993) and whose 100 ms stand 6 dB or more above the quietest 100 ms of the
+// 20 s around (minimum statistics, Martin 2001: that minimum lies 4 to 11 dB under the mean of the DEMAND
+// noises), digital silence (under -90 dBFS) left out. A held note stands over the background; a buzz is in it.
+export function voicing(x, T, hop) {
+	let L = x.length, pt = pitch(), frame = new Float32Array(hop), period = new Int16Array(T), on = new Uint8Array(T)
+	// power per 100 ms of input, and the least of it over the 20 s around (blocks of digital silence left out)
+	let K = Math.ceil(T / 10), e = new Float64Array(K), low = new Float64Array(K).fill(Infinity)
+	for (let i = 0; i < L; i++) e[i / (10 * hop) | 0] += x[i] * x[i]
+	for (let k = 0; k < K; k++) e[k] /= Math.max(1, Math.min(L, (k + 1) * 10 * hop) - k * 10 * hop)
+	for (let k = 0; k < K; k++) if (e[k] > 1e-9) for (let j = Math.max(0, k - 100); j <= Math.min(K - 1, k + 100); j++) low[j] = Math.min(low[j], e[k])
+	// the pitch searched every 20 ms where the frame stands over the background (every 10 ms keeps held notes no better)
+	for (let t = 0; t < T; t++) {
+		for (let i = 0, j = t * hop; i < hop; i++, j++) frame[i] = j < L ? x[j] * 32768 : 0
+		let over = e[t / 10 | 0] >= 4 * low[t / 10 | 0]
+		period[t] = pt.push(frame, over && !(t & 1))
+		on[t] = over && pt.gain >= .45
+	}
+	for (let t = 0, r = 0; t <= T; t++) {
+		if (t < T && on[t]) { r++; continue }
+		if (r < 30) on.fill(0, t - r, t)
+		r = 0
+	}
+	return { period, on }
+}
+
+// enhance(x, net, opts) → Float32Array: one channel at 48 kHz, as df.enhance.enhance(model, state, x, pad=True).
+// `gain` scales the input the network hears (its features), not the spectrum its gains and filters apply to;
+// `voice` keeps sustained voicing (voicing()) the network would remove.
+export async function enhance(x, net, { limit, chunk = 1000, warmup = 300, fade = 50, gain = 1, voice = false } = {}) {
 	let { hop, n, nbErb, nbDf, order, dfLa, convLa, widths, alpha } = net.params
 	let L = x.length, T = Math.floor((L + n) / hop), lead = order - 1 - dfLa, look = Math.max(convLa, dfLa)
-	let lim = limit != null && Math.abs(limit) > 0 ? 10 ** (-Math.abs(limit) / 20) : 0
+	let lim = limit != null && Math.abs(limit) > 0 ? 10 ** (-Math.abs(limit) / 20) : 0, g1 = f(gain), g2 = f(gain * gain)
+	let vo = voice && voicing(x, T, hop)
 	// per-frame store, a ring big enough for one chunk with its context
 	chunk = Math.max(1, Math.min(chunk, T)); fade = Math.min(fade, chunk)
 	let cap = chunk + fade + warmup + look + lead + 2
@@ -138,16 +174,45 @@ export async function enhance(x, net, { limit, chunk = 1000, warmup = 300, fade 
 			for (let b = 0; b < nbErb; b++) {
 				let s = 0, k = erbK[b]
 				for (let j = erbStart[b], e = j + widths[b]; j < e; j++) s = f(s + f(f(f(Sr[o + j] * Sr[o + j]) + f(Si[o + j] * Si[o + j])) * k))
-				let v = f(f(Math.log10(f(s + f(1e-10)))) * 10)
+				let v = f(f(Math.log10(f(f(s * g2) + f(1e-10)))) * 10)
 				mean[b] = f(f(v * a1) + f(mean[b] * alpha))
 				FE[slot * nbErb + b] = f(f(v - mean[b]) / 40)
 			}
 			for (let j = 0; j < nbDf; j++) {
-				let re = Sr[o + j], im = Si[o + j]
+				let re = f(Sr[o + j] * g1), im = f(Si[o + j] * g1)
 				unit[j] = f(f(f(Math.hypot(re, im)) * a1) + f(unit[j] * alpha))
 				let d = f(Math.sqrt(unit[j]))
 				FC[slot * nbDf * 2 + j] = f(re / d); FC[slot * nbDf * 2 + nbDf + j] = f(im / d)
 			}
+		}
+	}
+
+	// sustained voicing: a band holding a harmonic of the pitch keeps at least c² of its input, c its normalized
+	// correlation with the frame one period earlier and two (the less): the periodic share of its power, as RNNoise's
+	// pitch filter restores what its band gains remove (Valin 2018). Er, Ei is the output so far.
+	let P = [[new Float32Array(BINS), new Float32Array(BINS)], [new Float32Array(BINS), new Float32Array(BINS)]]
+	function keep(t, o) {
+		let T0 = vo.period[t], f0 = n / T0
+		for (let k = 0; k < 2; k++) {
+			for (let i = 0, j = (t - 1) * hop - (k + 1) * T0; i < n; i++, j++) buf[i] = f((j >= 0 && j < L ? x[j] : 0) * WINDOW[i])
+			rfft(buf, P[k][0], P[k][1])
+		}
+		for (let b = 0; b < nbErb; b++) {
+			let j0 = erbStart[b], j1 = j0 + widths[b]
+			// h·f0, h ≥ 1, within the band's bins (sr/n apart)
+			if (Math.floor((j1 - .5) / f0) < Math.max(1, Math.ceil((j0 - .5) / f0))) continue
+			let xx = 0, ee = 0, c = 1
+			for (let j = j0; j < j1; j++) { xx += Sr[o + j] ** 2 + Si[o + j] ** 2; ee += Er[j] ** 2 + Ei[j] ** 2 }
+			for (let [Pr, Pi] of P) {
+				let xy = 0, yy = 0
+				for (let j = j0; j < j1; j++) { xy += Sr[o + j] * Pr[j] + Si[o + j] * Pi[j]; yy += Pr[j] ** 2 + Pi[j] ** 2 }
+				c = Math.min(c, xy / Math.sqrt(xx * yy + 1e-30))
+			}
+			let p = c > 0 ? c * c : 0, g = Math.min(1, Math.sqrt(ee / (xx + 1e-30)))
+			if (p <= g) continue
+			// mixing a of the input in takes the band's gain from g to p
+			let a = (p - g) / (1 - g)
+			for (let j = j0; j < j1; j++) { Er[j] = f(f(Sr[o + j] * a) + f(Er[j] * (1 - a))); Ei[j] = f(f(Si[o + j] * a) + f(Ei[j] * (1 - a))) }
 		}
 	}
 
@@ -191,6 +256,7 @@ export async function enhance(x, net, { limit, chunk = 1000, warmup = 300, fade 
 				}
 			}
 			if (lim) for (let j = 0; j < BINS; j++) { Er[j] = f(f(Sr[o + j] * lim) + f(Er[j] * (1 - lim))); Ei[j] = f(f(Si[o + j] * lim) + f(Ei[j] * (1 - lim))) }
+			if (vo && vo.on[t]) keep(t, o)
 			if (t >= b) { tailR.set(Er, (t - b) * BINS); tailI.set(Ei, (t - b) * BINS); continue }
 			if (a > 0 && t - a < fade) {
 				let w = .5 - .5 * Math.cos(Math.PI * (t - a + .5) / fade), q = (t - a) * BINS

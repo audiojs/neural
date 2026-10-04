@@ -489,6 +489,22 @@ function removeDoubling(x, T0, prevPeriod, prevGain) {
 	return T0 < PMIN ? PMIN : T0
 }
 
+// pitch() → { push(frame, search = true) → period, gain, buf }: one 10 ms frame at 48 kHz, int16 scale, as
+// rnn_compute_frame_features searches it over the last 36 ms (PITCH_BUF_SIZE, held in `buf`): the period in
+// samples (60 to 768), `gain` the normalized correlation at it; search false only takes the frame in
+export function pitch() {
+	let buf = new Float32Array(PBUF), xlp = new Float32Array(PBUF >> 1), track = { buf, period: 0, gain: 0 }
+	track.push = (x, search = true) => {
+		buf.copyWithin(0, FRAME); buf.set(x, PBUF - FRAME)
+		if (!search) return track.period
+		pitchDownsample(buf, xlp, PBUF)
+		track.period = removeDoubling(xlp, PMAX - pitchSearch(xlp, PMAX >> 1, xlp, PFRAME, PMAX - 3 * PMIN), track.period, track.gain)
+		track.gain = PG[0]
+		return track.period
+	}
+	return track
+}
+
 // ------------------------------------------------ denoiser state (DenoiseState)
 
 // create(weights) → { process(input480, output480) → VAD probability }: one 10 ms frame at 48 kHz,
@@ -496,8 +512,7 @@ function removeDoubling(x, T0, prevPeriod, prevGain) {
 export function create(net) {
 	if (!net || !net.gru1) net = model(net)
 	let analysisMem = new Float32Array(FRAME), synthesisMem = new Float32Array(FRAME)
-	let pitchBuf = new Float32Array(PBUF), memHp = new Float64Array(2), lastg = new Float32Array(NB)
-	let lastPeriod = 0, lastGain = 0
+	let pt = pitch(), pitchBuf = pt.buf, memHp = new Float64Array(2), lastg = new Float32Array(NB)
 	let dXr = new Float32Array(FREQ), dXi = new Float32Array(FREQ), dPr = new Float32Array(FREQ), dPi = new Float32Array(FREQ)
 	let dEx = new Float32Array(NB), dEp = new Float32Array(NB), dExp = new Float32Array(NB)
 	// RNNState
@@ -508,7 +523,7 @@ export function create(net) {
 	let Xr = new Float32Array(FREQ), Xi = new Float32Array(FREQ), Pr = new Float32Array(FREQ), Pi = new Float32Array(FREQ)
 	let Ex = new Float32Array(NB), Ep = new Float32Array(NB), Exp = new Float32Array(NB), Ly = new Float32Array(NB)
 	let feat = new Float32Array(NF), g = new Float32Array(NB), gf = new Float32Array(FREQ)
-	let xlp = new Float32Array(PBUF >> 1), vad = new Float32Array(1)
+	let vad = new Float32Array(1)
 	let t1 = new Float32Array(128), tmp = new Float32Array(1536), cat = new Float32Array(1536)
 	let zrh = new Float32Array(1152), recur = new Float32Array(1152)
 
@@ -521,10 +536,7 @@ export function create(net) {
 	function features(x) {
 		buf.set(analysisMem); buf.set(x, FRAME); analysisMem.set(x)
 		window(buf); rfft(buf, Xr, Xi); bandEnergy(Ex, Xr, Xi)
-		pitchBuf.copyWithin(0, FRAME); pitchBuf.set(x, PBUF - FRAME)
-		pitchDownsample(pitchBuf, xlp, PBUF)
-		let idx = removeDoubling(xlp, PMAX - pitchSearch(xlp, PMAX >> 1, xlp, PFRAME, PMAX - 3 * PMIN), lastPeriod, lastGain)
-		lastPeriod = idx; lastGain = PG[0]
+		let idx = pt.push(x)
 		for (let i = 0; i < WIN; i++) buf[i] = pitchBuf[PBUF - WIN - idx + i]
 		window(buf); rfft(buf, Pr, Pi)
 		bandEnergy(Ep, Pr, Pi); bandEnergy(Exp, Xr, Xi, Pr, Pi)

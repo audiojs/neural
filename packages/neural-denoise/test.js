@@ -11,7 +11,7 @@ import os from 'node:os'
 import path from 'node:path'
 import denoise, { load, weights, rnnoise, FRAME, MODEL } from './denoise.js'
 import { model } from './rnnoise.js'
-import { loadDeepFilter, enhance, erbWidths } from './deepfilter.js'
+import { loadDeepFilter, enhance, erbWidths, voicing } from './deepfilter.js'
 import { rfft, irfft, WINDOW, N, HOP, BINS } from './fft.js'
 import { inputs, sha } from './scripts/rnnoise-reference.mjs'
 
@@ -220,7 +220,7 @@ function standIn({ gain = 1, tap = 2 } = {}) {
 				let S = feeds.emb.dims[1]
 				if (kind === 'erb_dec') return { m: t(new Float32Array(S * 32).fill(gain), [1, 1, S, 32]) }
 				let c = new Float32Array(S * 96 * 10)
-				for (let i = 0; i < S * 96; i++) c[i * 10 + 2 * tap] = 1
+				if (tap != null) for (let i = 0; i < S * 96; i++) c[i * 10 + 2 * tap] = 1
 				return { coefs: t(c, [1, S, 96, 10]) }
 			},
 			free() {},
@@ -248,11 +248,11 @@ test('deepfilter: a tap one frame ahead advances the band below 4.8 kHz by 480 s
 	ok(err < 1e-5, `y[n] = 1 kHz part at n + 480 to ${err.toExponential(1)}`)
 })
 
-test('deepfilter: denoise() limits DeepFilterNet3 to 12 dB unless given a limit; 0 is upstream\'s unlimited output', async () => {
+test('deepfilter: denoise() limits DeepFilterNet3 to 18 dB unless given a limit; 0 is none', async () => {
 	let m = await load('deepfilternet3', { weights: EXPORT, session: standIn({ gain: 0 }) }) // removes everything above 4.8 kHz
 	let x = IN['lena+noise'].subarray(0, 48000).map(v => v / 32768), run = opts => denoise(x, { sampleRate: 48000, model: m, ...opts })
-	let [unset, twelve, none] = [await run({}), await run({ limit: 12 }), await run({ limit: 0 })]
-	is(maxDiff(unset, twelve), 0, 'default = limit 12')
+	let [unset, eighteen, none] = [await run({}), await run({ limit: 18 }), await run({ limit: 0 })]
+	is(maxDiff(unset, eighteen), 0, 'default = limit 18')
 	ok(maxDiff(unset, none) > 1e-3, `limit 0 differs by up to ${maxDiff(unset, none).toExponential(1)}`)
 	m.free()
 })
@@ -263,19 +263,65 @@ test('deepfilter: export errors', async () => {
 	await rejects(() => loadDeepFilter(tar({ 'enc.onnx': 'enc', 'erb_dec.onnx': 'erb_dec', 'df_dec.onnx': 'df_dec', 'config.ini': CONFIG.replace('sr = 48000', 'sr = 16000') }), { session: standIn() }), /48 kHz/)
 })
 
-test('deepfilternet3: against Python DeepFilterNet 0.5.6 on the same input (skipped without the model or the reference)', MODEL_RUN, async () => {
+// a held /a/: harmonics of f0 (190 Hz, 5 Hz vibrato of 2%) at 1/h through three formants (700, 1220, 2600 Hz;
+// Peterson & Barney 1952, men's /ɑ/), `dur` s at 48 kHz
+function vowel(dur, f0 = 190) {
+	let n = Math.round(dur * 48000), out = new Float32Array(n), ph = 0
+	let F = [[700, 130], [1220, 70], [2600, 160]], amp = h => F.reduce((s, [c, b]) => s + 1 / (1 + ((h - c) / b) ** 2), 0) / h
+	for (let i = 0; i < n; i++) {
+		ph += f0 * (1 + .02 * Math.sin(2 * Math.PI * 5 * i / 48000)) / 48000
+		let v = 0, fi = f0 * (1 + .02 * Math.sin(2 * Math.PI * 5 * i / 48000))
+		for (let h = 1; h * fi < 8000; h++) v += amp(h * fi) * Math.sin(2 * Math.PI * h * ph)
+		out[i] = v
+	}
+	let r = Math.sqrt(out.reduce((s, v) => s + v * v, 0) / n)
+	return out.map(v => .1 * v / r)
+}
+// 32-bit LCG white noise in ±a
+const white = (n, a, seed = 1) => { let s = seed; return Float32Array.from({ length: n }, () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0, a * (s / 2 ** 32 - .5))) }
+const span = (x, a, b) => 10 * Math.log10(x.subarray(a, b).reduce((s, v) => s + v * v, 0) / (b - a) + 1e-30)
+
+test('deepfilter: voicing() marks a held vowel standing over the noise, not the noise, not a steady buzz', () => {
+	// 1 s of noise, 2 s of the vowel over it (20 dB above), 1 s of noise
+	let v = vowel(2), x = white(4 * 48000, .02).map((s, i) => s + (i >= 48000 && i < 3 * 48000 ? v[i - 48000] : 0)), T = Math.floor((x.length + 960) / 480)
+	let { on } = voicing(x, T, 480), share = (a, b) => on.subarray(a, b).reduce((s, v) => s + v, 0) / (b - a)
+	ok(share(110, 290) > .95, `the vowel: ${(100 * share(110, 290)).toFixed(0)}% of its frames`)
+	ok(share(0, 90) === 0 && share(310, 400) === 0, 'the noise around it: none')
+	// a mains buzz (harmonics of 120 Hz at 1/h) under the same noise: periodic and sustained, but the background itself
+	let bz = white(4 * 48000, .02, 7).map((s, i) => { let b = 0; for (let h = 1; h < 30; h++) b += Math.sin(2 * Math.PI * 120 * h * i / 48000) / h; return s + .05 * b })
+	is(voicing(bz, T, 480).on.reduce((s, v) => s + v, 0), 0, 'a steady buzz: no frame')
+})
+
+test('deepfilter: the voice guard keeps a held vowel a model would remove, and nothing else', async () => {
+	let net = await loadDeepFilter(EXPORT, { session: standIn({ gain: 0, tap: null }) }) // removes everything
+	let v = vowel(2), x = white(4 * 48000, .02).map((s, i) => s + (i >= 48000 && i < 3 * 48000 ? v[i - 48000] : 0))
+	let y = await enhance(x, net, { voice: true }), z = await enhance(x, net)
+	ok(span(z, 0, x.length) < -200, 'without the guard: silence')
+	let kept = span(y, 60000, 132000) - span(v, 12000, 84000)
+	ok(kept > -3, `the vowel: ${kept.toFixed(1)} dB of it kept`)
+	ok(span(y, 0, 40000) < -200 && span(y, 152000, x.length) < -200, 'the noise around it: removed')
+})
+
+test('deepfilternet3: enhance() with upstream\'s settings against Python DeepFilterNet 0.5.6 on the same input (skipped without the model or the reference)', MODEL_RUN, async () => {
 	if (!HAS_DFN) return console.log('  (no DeepFilterNet3 export in the cache: skipped)')
 	let m = await load('deepfilternet3', { sessionOptions: { intraOpNumThreads: 4 } })
 	try {
-		// whole-file, as enhance() runs in Python (11.3 s: the default 10 s chunks would split it)
-		let x = IN['lena+noise'].map(v => v / 32768), y = await denoise(x, { sampleRate: 48000, model: m, limit: 0, chunk: Infinity })
+		// whole-file, as enhance() runs in Python (11.3 s: the default 10 s chunks would split it); gain 1, no voice guard
+		let x = IN['lena+noise'].map(v => v / 32768), y = await enhance(x, m.net, { chunk: Infinity })
 		is(y.length, x.length)
 		let ref = path.join(DFN_REF, 'lena+noise')
 		if (!existsSync(ref + '.out.f32')) return console.log('  (no scripts/deepfilter-reference.py output: compared nothing)')
 		is(maxDiff(f32(ref + '.in.f32'), x), 0, 'the reference ran on this input')
 		let r = f32(ref + '.out.f32'), s = snr(r, y)
 		ok(s > 100, `SNR against Python ${s.toFixed(1)} dB, max |d| ${maxDiff(r, y).toExponential(1)}`)
-		let z = await denoise(x, { sampleRate: 48000, model: m, limit: 0, chunk: 300, warmup: 300 })
+		let z = await enhance(x, m.net, { chunk: 300, warmup: 300 })
 		ok(snr(y, z) > 10, `in 3 s chunks: another GRU trajectory, ${snr(y, z).toFixed(1)} dB from the whole-file run`)
+		// denoise() hears it with the speech (the louder half of 50 ms frames) at -20 dBFS, the voice guard on
+		let p = []
+		for (let i = 0; i + 2400 <= x.length; i += 2400) p.push(x.subarray(i, i + 2400).reduce((s, v) => s + v * v, 0) / 2400)
+		p.sort((a, b) => b - a)
+		let lvl = 10 * Math.log10(p.slice(0, p.length >> 1).reduce((s, v) => s + v, 0) / (p.length >> 1))
+		let u = await denoise(x, { sampleRate: 48000, model: m, limit: 0, chunk: Infinity }), v = await enhance(x, m.net, { chunk: Infinity, gain: 10 ** ((-20 - lvl) / 20), voice: true })
+		ok(maxDiff(u, v) < 1e-6, `denoise() = enhance() heard at -20 dBFS (the speech at ${lvl.toFixed(1)}) with the voice guard`)
 	} finally { m.free() }
 })
