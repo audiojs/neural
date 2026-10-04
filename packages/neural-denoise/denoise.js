@@ -5,15 +5,12 @@
 
 import resample from '@audio/resample-sinc'
 import { model as parseRNNoise, create, FRAME, LIMIT as RNNOISE_LIMIT } from './rnnoise.js'
-import { loadDeepFilter, enhance, MODEL, LIMIT as DFN_LIMIT } from './deepfilter.js'
+import { loadDeepFilter, enhance, level, bandEdge, MODEL, LEVEL, LIMIT as DFN_LIMIT } from './deepfilter.js'
 
 export { create as rnnoise, FRAME } from './rnnoise.js'
 export { MODEL } from './deepfilter.js'
 
 const RATE = 48000
-// DeepFilterNet3 hears its input with the speech at -20 dBFS, the median of the VoiceBank+DEMAND test set it scores
-// its published PESQ on (level(), -20.2): its features are not level-free (README, DeepFilterNet3)
-const LEVEL = -20
 // the attenuation limit (dB) each model gets when opts.limit is not given; 0 is upstream's output
 const LIMITS = { rnnoise: RNNOISE_LIMIT, deepfilternet3: DFN_LIMIT }
 
@@ -55,23 +52,13 @@ export default async function denoise(audio, opts = {}) {
 		for (let ch of channels) {
 			let x = rate === RATE ? Float32Array.from(ch) : resample(Float32Array.from(ch), { from: rate, to: RATE })
 			let y = handle.model === 'rnnoise' ? rnnoiseOffline(x, handle.net, limit)
-				: await enhance(x, handle.net, { ...opts, limit, gain: 10 ** ((LEVEL - level(x)) / 20), voice: true })
+				: await enhance(x, handle.net, { ...opts, limit, gain: 10 ** ((LEVEL - level(x)) / 20), edge: bandEdge(ch, rate), voice: true })
 			out.push(rate === RATE ? y : fit(resample(y, { from: RATE, to: rate }), ch.length))
 		}
 		return audio instanceof Float32Array ? out[0] : Array.isArray(audio) ? out : { ...audio, channelData: out, sampleRate: rate }
 	} finally {
 		if (handle !== opts.model) handle.free()
 	}
-}
-
-// speech level, dBFS: mean power of the louder half of 50 ms frames (LEVEL where there is none)
-function level(x) {
-	let F = 2400, p = []
-	for (let i = 0; i + F <= x.length; i += F) { let s = 0; for (let j = i; j < i + F; j++) s += x[j] * x[j]; p.push(s / F) }
-	p.sort((a, b) => b - a)
-	let k = Math.max(1, p.length >> 1), s = 0
-	for (let i = 0; i < k && i < p.length; i++) s += p[i]
-	return s > 0 ? 10 * Math.log10(s / k) : LEVEL
 }
 
 const fit = (y, n) => y.length === n ? y : (() => { let o = new Float32Array(n); o.set(y.subarray(0, n)); return o })()

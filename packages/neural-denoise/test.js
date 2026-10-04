@@ -11,7 +11,7 @@ import os from 'node:os'
 import path from 'node:path'
 import denoise, { load, weights, rnnoise, FRAME, MODEL } from './denoise.js'
 import { model } from './rnnoise.js'
-import { loadDeepFilter, enhance, erbWidths, voicing } from './deepfilter.js'
+import { loadDeepFilter, enhance, erbWidths, voicing, bandEdge, LEVEL, FILL } from './deepfilter.js'
 import { rfft, irfft, WINDOW, N, HOP, BINS } from './fft.js'
 import { inputs, sha } from './scripts/rnnoise-reference.mjs'
 
@@ -97,14 +97,14 @@ test('rnnoise: malformed weights throw', async () => {
 	throws(() => model(new Uint8Array(0)), /missing/)
 })
 
-test('denoise: rnnoise offline, limit 0 = the frame API with its 960-sample delay removed; same length; a limit mixes the input back, 20 dB by default', async () => {
+test('denoise: rnnoise offline, limit 0 = the frame API with its 960-sample delay removed; same length; a limit mixes the input back, 16 dB by default', async () => {
 	let x = IN['lena+noise'].map(v => v / 32768), net = model(await weights())
 	let pad = new Float32Array(Math.ceil((x.length + 960) / FRAME) * FRAME)
 	pad.set(IN['lena+noise'])
 	let { out } = frames(net, pad), y = await denoise(x, { sampleRate: 48000, limit: 0 })
 	is(y.length, x.length)
 	is(maxDiff(y, out.subarray(960, 960 + x.length).map(v => v / 32768)), 0, 'aligned sample for sample')
-	for (let [opts, db] of [[{ limit: 6 }, 6], [{}, 20]]) {
+	for (let [opts, db] of [[{ limit: 6 }, 6], [{}, 16]]) {
 		let z = await denoise(x, { sampleRate: 48000, ...opts }), lim = 10 ** (-db / 20)
 		ok(maxDiff(z, y.map((v, i) => v * (1 - lim) + x[i] * lim)) < 1e-6, `${opts.limit ? 'limit' : 'default'} ${db} dB: ${lim.toFixed(2)} of the input mixed in`)
 	}
@@ -128,7 +128,7 @@ test('denoise: input errors', async () => {
 	await rejects(() => denoise(new Float32Array(10), { sampleRate: 48000, model: 'demucs' }), /unknown model/)
 })
 
-test('worklet: 128-sample quanta, output = the frame API delayed by 448 samples (1408 in all), limit on the dry path, 20 dB by default', async () => {
+test('worklet: 128-sample quanta, output = the frame API delayed by 448 samples (1408 in all), limit on the dry path, 16 dB by default', async () => {
 	let procs = {}
 	globalThis.sampleRate = 48000
 	globalThis.AudioWorkletProcessor = class {}
@@ -143,9 +143,9 @@ test('worklet: 128-sample quanta, output = the frame API delayed by 448 samples 
 			let q = x.subarray(i, i + 128).map(v => v / 32768)
 			node.process([[q]], [[y.subarray(i, i + 128)]])
 		}
-		let db = limit ?? 20, lim = db ? 10 ** (-db / 20) : 0
+		let db = limit ?? 16, lim = db ? 10 ** (-db / 20) : 0
 		let exp = want.map((v, i) => v * (1 - lim) + (i >= 1408 ? x[i - 1408] / 32768 : 0) * lim)
-		ok(maxDiff(y, exp) < 1e-7, `limit ${limit ?? 'unset, 20'}: max |d| ${maxDiff(y, exp).toExponential(1)}`)
+		ok(maxDiff(y, exp) < 1e-7, `limit ${limit ?? 'unset, 16'}: max |d| ${maxDiff(y, exp).toExponential(1)}`)
 	}
 	throws(() => { globalThis.sampleRate = 44100; new procs['neural-denoise']({ processorOptions: { weights: bytes } }) }, /48 kHz/)
 	globalThis.sampleRate = 48000
@@ -209,13 +209,15 @@ function tar(files) {
 	return out
 }
 const CONFIG = `[train]\nmodel = deepfilternet3\n\n[df]\nsr = 48000\nfft_size = 960\nhop_size = 480\nnb_erb = 32\nnb_df = 96\nnorm_tau = 1\nmin_nb_erb_freqs = 2\ndf_order = 5\ndf_lookahead = 2\n\n[deepfilternet]\nconv_lookahead = 2\n`
-// stand-ins: ERB gains `gain`, one deep-filter tap of 1 at `tap` (2 = the current frame)
-function standIn({ gain = 1, tap = 2 } = {}) {
+// stand-ins: ERB gains `gain`, one deep-filter tap of 1 at `tap` (2 = the current frame); `seen` collects the ERB
+// features the encoder is fed
+function standIn({ gain = 1, tap = 2, seen } = {}) {
 	let t = (a, dims) => ({ data: a, dims, type: 'float32' })
 	return async bytes => {
 		let kind = new TextDecoder().decode(bytes)
 		return {
 			async run(feeds) {
+				if (kind === 'enc') seen?.push(feeds.feat_erb.data.slice())
 				if (kind === 'enc') { let S = feeds.feat_erb.dims[2], z = n => new Float32Array(n); return { e0: t(z(64 * S * 32), [1, 64, S, 32]), e1: t(z(64 * S * 16), [1, 64, S, 16]), e2: t(z(64 * S * 8), [1, 64, S, 8]), e3: t(z(64 * S * 8), [1, 64, S, 8]), emb: t(z(S * 512), [1, S, 512]), c0: t(z(64 * S * 96), [1, 64, S, 96]), lsnr: t(z(S), [1, S, 1]) } }
 				let S = feeds.emb.dims[1]
 				if (kind === 'erb_dec') return { m: t(new Float32Array(S * 32).fill(gain), [1, 1, S, 32]) }
@@ -300,6 +302,60 @@ test('deepfilter: the voice guard keeps a held vowel a model would remove, and n
 	let kept = span(y, 60000, 132000) - span(v, 12000, 84000)
 	ok(kept > -3, `the vowel: ${kept.toFixed(1)} dB of it kept`)
 	ok(span(y, 0, 40000) < -200 && span(y, 152000, x.length) < -200, 'the noise around it: removed')
+})
+
+test('deepfilter: bandEdge() finds the band an input fills, at its own rate', () => {
+	let x = white(48000, .1), lp = new Float32Array(48000)
+	// a 15 kHz low-pass: 255-tap windowed sinc (Blackman), its stopband 74 dB down
+	let h = Float32Array.from({ length: 255 }, (_, i) => { let k = i - 127, w = .42 - .5 * Math.cos(2 * Math.PI * i / 254) + .08 * Math.cos(4 * Math.PI * i / 254); return w * (k ? Math.sin(2 * Math.PI * 15000 / 48000 * k) / (Math.PI * k) : 2 * 15000 / 48000) })
+	for (let i = 0; i < 48000; i++) { let v = 0; for (let k = 0; k < 255; k++) if (i - k >= 0) v += h[k] * x[i - k]; lp[i] = v }
+	is(bandEdge(x, 48000), 24000, 'white noise at 48 kHz: the full band')
+	is(bandEdge(x.subarray(0, 16000), 16000), 8000, 'at 16 kHz: its Nyquist frequency')
+	let e = bandEdge(lp, 48000)
+	ok(e > 15000 && e < 16500, `low-passed at 15 kHz: ${e} Hz`)
+	is(bandEdge(new Float32Array(48000), 44100), 22050, 'silence: nothing measured, the rate\'s band')
+	is(bandEdge(x.subarray(0, 500), 48000), 24000, 'shorter than a frame: the rate\'s band')
+})
+
+test('deepfilter: a 16 kHz input\'s empty bands reach the network as white noise FILL dB under the speech, not at libDF\'s 1e-10; a full band\'s as before; a band holding the edge as it is', async () => {
+	let seen = [], m = await load('deepfilternet3', { weights: EXPORT, session: standIn({ seen }) })
+	let x = white(32000, .2, 3), y = await denoise(x, { sampleRate: 16000, model: m })
+	ok(y.length === x.length && y.every(Number.isFinite), 'same length, finite')
+	// band 31 (20.7 to 24 kHz), all above the edge: v = 10·log10(floor) fluctuating, its mean normalization starting at
+	// -90 dB (libDF), α = 0.99; the network's frame 0 is frame 2 (conv_lookahead)
+	let top = seen[0].filter((_, i) => i % 32 === 31), v = 10 * Math.log10(10 ** ((LEVEL + FILL) / 10) / 1920), a = Math.fround(.99)
+	let first = (v + 90) * a ** 3 / 40
+	ok(Math.abs(top[0] - first) < .05, `the first frame's feature ${top[0].toFixed(3)}, the floor's ${first.toFixed(3)}; libDF's 1e-10, ${((-100 + 90) * a ** 3 / 40).toFixed(3)}`)
+	let moves = 0
+	for (let t = 101; t < 190; t++) moves += Math.abs(top[t] - top[t - 1]) / 89
+	ok(moves > .005, `it moves as noise does: ${moves.toFixed(4)} per frame`)
+	// a full band: no floor, the features as without it, bit for bit
+	let z = white(48000, .2, 5), f1 = [], f2 = []
+	let n1 = await loadDeepFilter(EXPORT, { session: standIn({ seen: f1 }) }), n2 = await loadDeepFilter(EXPORT, { session: standIn({ seen: f2 }) })
+	await enhance(z, n1, { edge: bandEdge(z, 48000) }); await enhance(z, n2)
+	is(maxDiff(f1[0], f2[0]), 0, 'a 48 kHz full-band input: the same features')
+	// only the bands wholly above the edge: at 8 kHz, band 25 (8.5 kHz) on; band 24 (7.3 to 8.5 kHz) holds the input's own content
+	f1.length = f2.length = 0
+	await enhance(z, n1, { edge: 8000 }); await enhance(z, n2)
+	let same = b => f1[0].every((v, i) => i % 32 !== b || v === f2[0][i])
+	ok([...Array(25).keys()].every(same) && ![25, 26, 31].some(same), 'bands 0 to 24 as without the floor, 25 on over it')
+	// the floor is heard, never applied: identity gains and taps still give the input back
+	let id = await enhance(z, n1, { edge: 8000 })
+	ok(maxDiff(id, z) < 2e-6, `identity model with the floor: max |y − x| ${maxDiff(id, z).toExponential(1)}`)
+	m.free()
+})
+
+test('denoise: empty, one sample, shorter than a frame, silence: the same length back, finite, silence kept (both models)', async () => {
+	let dfn = await load('deepfilternet3', { weights: EXPORT, session: standIn() }), rnn = await load()
+	for (let [name, model] of [['rnnoise', rnn], ['deepfilternet3', dfn]]) for (let rate of [48000, 16000]) {
+		for (let n of [0, 1, 100]) {
+			let y = await denoise(white(n, .1), { sampleRate: rate, model })
+			ok(y.length === n && y.every(Number.isFinite), `${name} at ${rate}: ${n} samples in, ${y.length} out`)
+		}
+		let y = await denoise(new Float32Array(rate), { sampleRate: rate, model })
+		ok(y.length === rate && y.every(v => v === 0), `${name} at ${rate}: 1 s of digital silence stays silent`)
+	}
+	dfn.free()
 })
 
 test('deepfilternet3: enhance() with upstream\'s settings against Python DeepFilterNet 0.5.6 on the same input (skipped without the model or the reference)', MODEL_RUN, async () => {

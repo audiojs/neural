@@ -33,9 +33,11 @@ const F = { c06: f(.6), c07: f(.7), c085: f(.85), c09: f(.9), c03: f(.3), c04: f
 
 export const FRAME = 480
 // The attenuation limit, dB, that denoise(), the worklet and the audio atom apply unless given one (0:
-// none, upstream's output). Unlimited, this model removes the voice on 12 of the 824 VoiceBank+DEMAND
-// test files (STOI down by more than 0.2); limited to 20 dB, on none (README, Accuracy).
-export const LIMIT = 20
+// none, upstream's output): the most before the voice itself suffers. Unlimited, the model gates speech
+// that has nothing to remove (clean word ends 37 dB down) and removes the voice on some noisy files. On the
+// VoiceBank+DEMAND training subset (504 files) DNSMOS SIG holds from 14 to 16 dB and falls past it, and 16
+// is the most at which no file loses more than 0.2 STOI (21 files unlimited, 3 at 20) (README, Accuracy).
+export const LIMIT = 16
 const WIN = 960, FREQ = 481, NB = 32, NF = 65
 const PMIN = 60, PMAX = 768, PFRAME = 960, PBUF = PMAX + PFRAME
 

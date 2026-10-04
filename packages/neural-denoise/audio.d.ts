@@ -10,7 +10,7 @@ type Process = (inputs: Float32Array[][], outputs: Float32Array[][], params: Liv
 
 /** Chainable-host options for 'rnnoise' */
 export interface RnnoiseOptions {
-  /** 0..100 dB (default 20) */
+  /** 0..100 dB (default 16) */
   "limit"?: Auto
   at?: number | string
   duration?: number | string
@@ -22,7 +22,7 @@ export declare const rnnoise: {
   latency: (ctx: { sampleRate: number, params: Live }) => number
   tail: 0
   params: {
-    /** 0..100 dB (default 20) */
-    "limit": { type: "number", default: 20 }
+    /** 0..100 dB (default 16) */
+    "limit": { type: "number", default: 16 }
   }
 }

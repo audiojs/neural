@@ -6,8 +6,8 @@
 // Render quanta (128 samples) are collected into 10 ms frames (480); the output queue starts with
 // 480 − gcd(quantum, 480) samples of silence, the least that never runs dry, so the node's latency is
 // constant: that plus RNNoise's 960 samples (1408 samples, 29.3 ms, at the 128-sample quantum).
-// processorOptions.limit (dB) caps the attenuation by mixing the input back in: 20 unless given, 0 for
-// none (upstream's output).
+// processorOptions.limit (dB) caps the attenuation by mixing the input back in: 16 unless given (LIMIT),
+// 0 for none (upstream's output).
 
 import { model, create, FRAME, LIMIT } from './rnnoise.js'
 

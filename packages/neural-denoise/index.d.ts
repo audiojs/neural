@@ -28,7 +28,7 @@ export interface DenoiseOptions extends LoadOptions {
   sampleRate?: number
   /** 'rnnoise' (default), 'deepfilternet3', or a handle from load() to reuse across calls */
   model?: 'rnnoise' | 'deepfilternet3' | Model
-  /** attenuation limit in dB, the most the noise drops: mixes the input back in at 10^(−limit/20); default 20 for RNNoise, 18 for DeepFilterNet3 (README, API); 0 for none. DeepFilterNet3 also hears its input with the speech at −20 dBFS and keeps sustained voicing it would remove (held sung notes) */
+  /** attenuation limit in dB, the most the noise drops: mixes the input back in at 10^(−limit/20); default 16 for RNNoise, 18 for DeepFilterNet3 (README, API); 0 for none. DeepFilterNet3 also hears its input with the speech at −20 dBFS and, above a band-limited input's edge, a white noise floor 20 dB under it, and keeps sustained voicing it would remove (held sung notes) */
   limit?: number
   /** DeepFilterNet3: frames (10 ms) per model run, default 1000 */
   chunk?: number

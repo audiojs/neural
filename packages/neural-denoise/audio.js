@@ -10,10 +10,10 @@
 // the end, where the offline resampler sees the end and a stream sees the host's trailing silence.
 //
 // limit (dB): the input is mixed back in at 10^(−limit/20), so noise drops by at most `limit`; 0 lifts it
-// (denoise()'s option, DeepFilterNet's atten_lim_db). The default departs from denoise()'s (none) on purpose:
-// unlimited, RNNoise's current model removes the voice on 12 of the 824 VoiceBank+DEMAND test files (STOI
-// down by more than 0.2); limited to 20 dB, on none, and PESQ rises from 2.11 to 2.46 (README, Accuracy).
-// The limit is read per block and applies from the next finished frame on.
+// (denoise()'s option, DeepFilterNet's atten_lim_db). The default is denoise()'s, 16 dB (rnnoise.js LIMIT):
+// unlimited, RNNoise's current model gates clean speech and removes the voice on some noisy files; 16 is the
+// most before the voice itself suffers (README, Accuracy). The limit is read per block and applies from the
+// next finished frame on.
 //
 // Channels are denoised independently; a channel's state (70 KB) is created on its first block, as the
 // worklet does, since hosts declare up to 32 channels.
