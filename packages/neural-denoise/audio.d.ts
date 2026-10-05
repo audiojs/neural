@@ -12,6 +12,8 @@ type Process = (inputs: Float32Array[][], outputs: Float32Array[][], params: Liv
 export interface RnnoiseOptions {
   /** 0..100 dB (default 16) */
   "limit"?: Auto
+  /** default "pass" */
+  "music"?: "pass" | "enhance"
   at?: number | string
   duration?: number | string
 }
@@ -24,5 +26,7 @@ export declare const rnnoise: {
   params: {
     /** 0..100 dB (default 16) */
     "limit": { type: "number", default: 16 }
+    /** default "pass" */
+    "music": { type: "enum", values: ["pass","enhance"], default: "pass" }
   }
 }

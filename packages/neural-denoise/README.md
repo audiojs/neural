@@ -2,7 +2,7 @@
 
 > Neural speech enhancement: RNNoise ported to JS, bit-exact to its C, weights inside; DeepFilterNet3 through `@audio/neural-runtime`, matching the Python original.
 
-The neural tier beside [`@audio/denoise`](https://github.com/audiojs/denoise)'s statistical denoisers (`omlsa`, `wiener`, `specsub`). A statistical denoiser tracks a noise floor it assumes to be steady; these models learned what speech is, so they also remove noise that moves: keyboards, traffic, a fan changing speed, a busy room.
+The neural tier beside [`@audio/denoise`](https://github.com/audiojs/denoise)'s statistical denoisers (`omlsa`, `wiener`, `specsub`). A statistical denoiser tracks a noise floor it assumes to be steady; these models learned what speech is, so they also remove noise that moves: keyboards, traffic, a fan changing speed, a busy room. To them everything that isn't speech is noise, music too, so a speech/music classifier stands guard: music, songs included, passes through untouched ([Music](#music)).
 
 ```js
 import denoise from '@audio/neural-denoise'
@@ -18,6 +18,7 @@ let better = await denoise(pcm, { sampleRate: 44100, model: 'deepfilternet3' }) 
 | `sampleRate` | | required unless `audio` carries it |
 | `model` | `'rnnoise'` | `'rnnoise'`, `'deepfilternet3'`, or a handle from `load()` |
 | `limit` | `16` RNNoise, `18` DeepFilterNet3 | attenuation limit, dB: the input is mixed back in at 10^(−limit/20), so noise drops by at most `limit`; `0` for none. Each default is the most before the voice itself suffers. RNNoise turns down speech that has nothing to remove (clean word ends 37 dB down unlimited, 12 at 16 dB) and removes the voice on some noisy files; on VoiceBank+DEMAND's training speakers its DNSMOS SIG holds from 14 to 16 dB and falls past it, and at 16 no file loses more than 0.2 STOI (21 of 504 unlimited, 3 at 20, the default before 0.3). DeepFilterNet3's SIG holds from 12 to 18 dB and falls past it, while BAK and PESQ keep rising; unlimited, it takes the pauses of home narrations to digital silence, which ACX Check flags ([Accuracy](#accuracy)) |
+| `music` | `'pass'` | `'pass'`: speech and noise are enhanced, music passes through untouched, segment by segment, the gain ramped over 200 ms at each switch ([Music](#music)); `'enhance'`: everything, as before 0.4 |
 | `weights` | | RNNoise: bytes of an upstream weight blob; DeepFilterNet3: URL or bytes of an upstream ONNX export |
 | `device` | `'auto'` | DeepFilterNet3: `@audio/neural-runtime` backend, `'node'`, `'wasm'` or `'webgpu'` |
 | `sessionOptions` | | DeepFilterNet3: ONNX Runtime session options, e.g. `{ intraOpNumThreads: 4 }` |
@@ -55,7 +56,7 @@ let node = new AudioWorkletNode(ctx, 'neural-denoise', { processorOptions: { wei
 mic.connect(node).connect(ctx.destination)
 ```
 
-The processor collects 128-sample render quanta into 10 ms frames. Its output queue starts with 480 − gcd(128, 480) = 448 samples of silence, the least that never runs dry, so the node's delay is constant: 1408 samples, 29.3 ms. It allocates nothing per frame. The context must run at 48 kHz; the browser resamples the device. `limit` works as in `denoise()`: 16 dB unless given, `0` for none.
+The processor collects 128-sample render quanta into 10 ms frames. Its output queue starts with 480 − gcd(128, 480) = 448 samples of silence, the least that never runs dry, so the node's delay is constant: 1408 samples, 29.3 ms. It allocates nothing per frame. The context must run at 48 kHz; the browser resamples the device. `limit` works as in `denoise()`: 16 dB unless given, `0` for none. The worklet is for a live voice and has no music guard: it denoises everything.
 
 Frame by frame, as `rnnoise_process_frame` works:
 
@@ -68,16 +69,17 @@ let voice = st.process(input480, output480)  // int16 scale in and out; voice pr
 
 ## In `audio`: the contract atom
 
-`@audio/neural-denoise/audio` is the package's [contract](https://github.com/audiojs/compile/blob/main/CONTRACT.md) manifest: `rnnoise`, a streaming atom at any sample rate, with one parameter, `limit` (dB, default 16, 0 for none). [`audio`](https://github.com/audiojs/audio) hosts it as its `rnnoise` op, and runs DeepFilterNet3 as its `deepfilter` op (the whole input before rendering, `limit` 18 by default):
+`@audio/neural-denoise/audio` is the package's [contract](https://github.com/audiojs/compile/blob/main/CONTRACT.md) manifest: `rnnoise`, a streaming atom at any sample rate, with two parameters, `limit` (dB, default 16, 0 for none) and `music` (`'pass'`, the default, or `'enhance'`). [`audio`](https://github.com/audiojs/audio) hosts it as its `rnnoise` op, and runs DeepFilterNet3 as its `deepfilter` op (the whole input before rendering, `limit` 18 and `music: 'pass'` by default):
 
 ```js
 import audio from 'audio'
 
 await audio('take.wav').rnnoise().save('clean.wav')     // streams
-await audio('take.wav').deepfilter().save('clean.wav')  // DeepFilterNet3, room tone kept
+await audio('take.wav').deepfilter().save('clean.wav')  // DeepFilterNet3, room tone kept, music passed
+await audio('show.wav').deepfilter({ music: 'enhance' }) // music denoised too
 ```
 
-Blocks of any size collect into frames; the output queue starts with 479 samples of silence (FRAME − 1, the least that never runs dry for any block size), so the delay is constant: 1439 samples at 48 kHz (30 ms). Other rates go to 48 kHz and back through a streaming form of `@audio/resample-sinc`'s kernel, in its arithmetic, and the delay grows by its lookahead: 1354 samples at 44.1 kHz (30.7 ms), 271 at 8 kHz. The output is `denoise()`'s, delayed: at 48 kHz sample for sample; at other rates, with resample-sinc 1.2.0, sample for sample but in the last 20–30 ms, where the offline resampler sees the end and a stream the host's trailing silence. The default `limit`, 16 dB, is `denoise()`'s for RNNoise: unlimited, the model gates clean speech and removes the voice on some noisy files (Accuracy, below).
+Blocks of any size collect into frames; the output queue starts with 479 samples of silence (FRAME − 1, the least that never runs dry for any block size), so the delay is constant: 1439 samples at 48 kHz (30 ms). Other rates go to 48 kHz and back through a streaming form of `@audio/resample-sinc`'s kernel, in its arithmetic, and the delay grows by its lookahead: 1354 samples at 44.1 kHz (30.7 ms), 271 at 8 kHz. The output is `denoise()`'s, delayed: at 48 kHz sample for sample; at other rates, with resample-sinc 1.2.0, sample for sample but in the last 20–30 ms, where the offline resampler sees the end and a stream the host's trailing silence. The default `limit`, 16 dB, is `denoise()`'s for RNNoise: unlimited, the model gates clean speech and removes the voice on some noisy files (Accuracy, below). With `music: 'pass'` the atom decides as `denoise()` does for RNNoise, from what has arrived, at no added delay, and mixes the denoised signal with the input itself, delayed by the latency, at the host's rate: what passes is the input, sample for sample.
 
 ## RNNoise
 
@@ -105,6 +107,58 @@ The parameters come from the export's `config.ini`, so upstream's low-latency ex
 
 **Long inputs** run in chunks of `chunk` frames (10 s). Upstream feeds the whole file at once, about 8 MB of activations per second of audio (peak RSS 768 MB for 30 s, 1 GB for 60 s in onnxruntime-node); in 10 s chunks a 180 s file peaks at 563 MB, and any length stays there. The ONNX graphs are exactly causal (outputs on a prefix equal the whole run's) but take no GRU state, so each chunk after the first starts `warmup` frames (3 s) early from zero state, and its first `fade` frames (0.5 s) crossfade from the previous chunk's run, which continued that far. The GRUs remember how they started: 6 s after such a start the gains still differ from the whole-file run's by up to 0.1–0.5. Chunked output is another valid run, not the whole-file one; on VoiceBank+DEMAND in 1 s chunks (1 s warm-up, 0.2 s crossfade, 2 to 3 chunks per utterance) the scores do not move: PESQ 3.164 against 3.162 whole-file, STOI 0.9450 against 0.9452, SI-SDR 18.94 against 18.96 dB, though single files shift by up to 0.31 PESQ either way. The STFT and features stay exact across chunks. Exact chunking needs a stateful re-export (GRU states and convolution buffers as graph inputs and outputs), which is also what live DeepFilterNet3 needs.
 
+## Music
+
+Both models enhance speech, and to them everything else is noise: at their default limits music lost 8 to 16 dB in every band, songs included (Accuracy, Music). So by default (`music: 'pass'`) a classifier segments the input into speech, music and noise, and the model's output is kept only where it hears speech or noise; where it hears music the input passes through, bit for bit. What counts as what follows the classifier's training, French radio and TV: speech over a music bed is speech, so the bed under a voice-over is cleaned with the noise; a song is music, its singer included, since a speech enhancer would strip the accompaniment from under the voice and dull the voice too. A voice singing alone sits between the two (below). `music: 'enhance'` enhances everything, as before 0.4.
+
+1. **Classifier**: inaSpeechSegmenter's speech/music/noise CNN (Doukhan et al., ICASSP 2018; MIT; its `smn` engine), 782,403 weights, in the package as float16 (`guard.bin`, 1.56 MB; `scripts/guard.py` writes it from upstream's Keras export, the batch norms folded). Its input as ina computes it: 16 kHz (here a 31-tap low-pass and every third sample of the 48 kHz signal), pre-emphasis 0.97, 25 ms Hann frames every 10 ms, 24 mel bands from 100 Hz to 8 kHz, log; the lowest 21 bands over 0.68 s make a patch, standardized by its own mean and deviation, so the level does not matter. One patch every 100 ms (ina takes one every 20 ms; on the tuning material every 100 ms decides the same).
+2. **Offline** (DeepFilterNet3, `denoise()` and the `deepfilter` op): segments as ina makes them, Viterbi over the whole input, three states, a switch costing 10⁻⁸⁰ per 20 ms (ina's own constant), so a segment lasts a second or more and a stray patch moves nothing. An input that is music throughout never reaches the model.
+3. **Streaming** (RNNoise: `denoise()`, the contract atom): a stream decides on what has arrived. The forward recursion of the same chain for two states (music, the rest) keeps the log-odds of music, bounded at ±20 nats; a patch moves them by at most ln 100, and by 1 nat less (a prior for speech), and the stream switches to music above 5 and back below 0. Each output frame takes the decision made once the input frame two on is in (RNNoise's own delay), so nothing is added to the latency, and `denoise()` and the atom give the same samples. The price: music is denoised for its first second or so, and each switch comes about a second late.
+4. **The gain** between the enhanced signal and the input moves over 200 ms, raised cosine: offline centered on the segment boundary, streaming from the decision on. It is applied at the input's rate (the 48 kHz gain resampled with the signal), so what passes is the input itself, not its round trip through 48 kHz.
+
+It runs in JS: a stream's `process()` can't await ONNX Runtime, and RNNoise needs no runtime. The three upper convolutions (through im2col) and the dense layers run in a 1,074-byte WebAssembly SIMD kernel (`gemm.wat`), the first convolution once per frame and shared by the overlapping patches (the max pooling after it commutes with each patch's standardization); 1.1 s of CPU per minute of audio, 11 s on the JS path where WebAssembly SIMD is missing (same bits).
+
+**Accuracy**, on labelled sets (`python scripts/accuracy.py guard-sets`, `node scripts/accuracy.mjs guard train|test`): the share of active 10 ms frames passed (within 40 dB of the loudest). The constants (one patch per 100 ms, the streaming bound, prior and hysteresis) were chosen on the training sets: VoiceBank+DEMAND's training speakers, the MUSDB18 training previews, Slakh2100 mixes 1 to 10, VocalSet singers 1 to 5, the Spoken Wikipedia narrations not in Rooms; the test sets below were run once. Beds: clean utterances over a song's accompaniment (the MUSDB18 stems but the vocals) 20, 15 and 10 dB under the speech; hiss: white and pink Gaussian noise at 20, 10 and 5 dB SNR. Programmes: 8 sequences of six segments, speech (five utterances of one kind, or 15 s of narration) and music (up to 20 s of a song, its accompaniment or a Slakh mix) in turn, scored 0.5 s or more from each cut.
+
+| Test set | Frames | Passed, offline (DeepFilterNet3) | Passed, streaming (RNNoise) |
+|---|---|---|---|
+| **Speech, to enhance** | | | |
+| VoiceBank+DEMAND, clean / noisy (824 each) | | 0.0% / 0.0% | 0.0% / 0.0% |
+| the same in white noise, 20 / 10 / 5 dB (275 each) | | 0.0% / 0.0% / 0.0% | 0.0% / 0.0% / 0.0% |
+| the same in pink noise, 20 / 10 / 5 dB | | 0.0% / 0.0% / 0.0% | 0.0% / 0.0% / 0.0% |
+| over a music bed 20 / 15 / 10 dB down (275 each) | | 0.4% / 0.7% / 1.4% | 0.7% / 1.4% / 2.3% |
+| ten home narrations (Rooms) | | 0.0% | 0.0% |
+| VocalSet, spoken excerpts (10) | | 1.8% | 2.1% |
+| DEMAND noise alone (noisy − clean) | | 7.8% | 2.4% |
+| **Music, to pass** | | | |
+| MUSDB18 test previews, songs (50) | | 100% | 87.2% |
+| the same, accompaniment only (50) | | 100% | 87.7% |
+| Slakh2100 mixes 11 to 20, 60 s each | | 100% | 98.6% |
+| the four repair pieces, 60 s each | | 95.7% | 93.8% |
+| **Programmes** (8): speech enhanced / music passed | | 100% / 100% | 98.5% / 92.9%, switches 0.96 s late (median) |
+| **Singing alone** | | | |
+| MUSDB18 vocal stems (50) | | 57.5% | 32.4% |
+| VocalSet sung phrases (20) / long tones (10) | | 66.4% / 67.8% | 34.3% / 40.0% |
+
+Offline, every speech set keeps 98.2% or more of its frames enhanced (noisy and hissy speech all of them) and every music set but one passes all of its frames; on the programmes nothing errs 0.5 s from a cut. Streaming, speech is kept as well, and music loses its first second: the previews are 7 s long, so 13% of their frames; the 60 s Slakh mixes, 1.4%. The noise alone that passes is DEMAND's living room (30% of its frames), which has music in it. Of the pieces, `trumpet` (solo) is enhanced for its first 4 s and `brahms` for 5 s of a quiet passage. A voice singing alone is split, half to two thirds of its frames passed offline: held notes and phrases the classifier calls music pass, the rest is enhanced, where DeepFilterNet3's voice guard keeps sustained voicing ([DeepFilterNet3](#deepfilternet3), step 5). Speech over a bed 10 dB down, louder than a podcast's, still counts as speech.
+
+What it changes, at the default limits (Accuracy: the same sets, `python scripts/accuracy.py music`; per band the median over the files, the worst in parentheses):
+
+| | SI-SDR to the input (median) | 0–250 Hz | 0.25–1 kHz | 1–4 kHz | 4–8 kHz | 8–16 kHz | 16–22 kHz |
+|---|---|---|---|---|---|---|---|
+| DeepFilterNet3, songs (50 MUSDB18 previews): 0.3 | 4.0 dB | −16.9 dB | −13.7 | −16.5 | −13.2 | −12.7 | −16.0 |
+| **0.4** | **the input, bit for bit (all 50)** | **0.0** | **0.0** | **0.0** | **0.0** | **0.0** | **0.0** |
+| DeepFilterNet3, pieces (4): 0.3 | 1.1 dB | −8.6 (−13.0) | −9.0 (−12.1) | −10.9 (−14.8) | −14.4 (−16.6) | −15.5 (−17.4) | −14.0 (−16.1) |
+| **0.4** | **2 of 4 bit for bit** | **0.0 (−0.0)** | **−0.0 (−1.9)** | **−0.1 (−1.7)** | **−0.1 (−4.5)** | **−0.7 (−10.2)** | **−1.0 (−13.0)** |
+| DeepFilterNet3, VocalSet chords (5): 0.3 / **0.4** | 3.5 dB / **bit for bit** | −5.8 / **0.0** | −3.9 / **0.0** | −4.9 / **0.0** | −9.5 / **0.0** | −11.1 / **0.0** | −3.7 / **0.0** |
+| RNNoise, songs: 0.3 | 3.9 dB | −14.4 (−16.0) | −8.0 (−15.1) | −10.1 (−15.8) | −11.4 (−16.0) | −12.2 (−16.0) | −14.2 (−16.0) |
+| **0.4** (the first second denoised) | **11.4 dB** | **−0.6 (−2.3)** | **−0.4 (−2.5)** | **−0.4 (−2.5)** | **−0.5 (−2.2)** | **−0.6 (−2.2)** | **−0.6 (−3.7)** |
+| RNNoise, pieces: 0.3 / **0.4** | 5.8 / **18.3 dB** | −11.5 / **−0.1** | −12.9 / **−0.1** | −13.7 / **−0.1** | −15.3 / **−0.1** | −14.2 / **−0.5** | −11.0 / **−0.6** |
+
+Speech is untouched by the guard: on VoiceBank+DEMAND's 824 noisy test utterances both models' default outputs are 0.3's bit for bit (PESQ 2.90 and 2.49, the Accuracy table's rows), and so are those of the ten narrations; lena, a film scene with music under the voice, has its musical opening passed.
+
+The classifier was chosen against two others, run in Python on the same training sets, each frame scored as music where its music score beats its speech score (Viterbi-smoothed alike): YAMNet (Google, Apache-2.0; AudioSet's 521 classes, 3.7M weights, 0.96 s frames) passed music as well (songs 100%, accompaniment 100%) but speech over a bed 10 / 15 / 20 dB down 29 / 9.6 / 0.9% of the time (ina, offline: 2.2 / 1.2 / 0.4%); Silero VAD (MIT) tells speech from everything else, noise included, and called 17 to 30% of VoiceBank's clean speech frames non-speech (the pauses). PANNs CNN14 (80M weights) and BEATs (90M) were not tried: a guard should cost a fraction of the model it guards.
+
 ## Verification
 
 | Check | Result |
@@ -120,6 +174,8 @@ The parameters come from the export's `config.ini`, so upstream's low-latency ex
 | Edge cases (`test.js`), both models, 48 and 16 kHz | empty input, one sample, 100 samples: the same length back, finite; a second of digital silence stays digital silence |
 | Worklet (`test.js`, AudioWorkletGlobalScope simulated) | the frame API's output, delayed by 448 samples, at `limit: 0`; at 12 and at the default 16, that output with the input mixed back, to 1e-7 |
 | Worklet in Chromium 153 (headless, Playwright, `scripts/worklet.mjs`) | runs, no processor error, output non-silent; live underruns in Speed |
+| Music guard (`test.js`) against the float32 Keras model, the same input (`scripts/guard.py` → `fixtures/guard.json`) | lena, 106 patches: probabilities within 1.7e-3 (float16 weights); the wasm kernel and the JS loop give the same bits |
+| Music guard (`test.js`): a synthetic band (chords of plucked tones, a bass, a tick) | DeepFilterNet3, through a stand-in that removes everything: the band back bit for bit at 48 and 44.1 kHz, `music: 'enhance'` removes it; RNNoise: the band itself from 1.1 s on; band, noisy speech, band (with VoiceBank+DEMAND in the data cache): two switches, each within 0.5 s of its cut, gain exactly 0 and 1 between 200 ms raised-cosine ramps; RNNoise's output to frame f − 2 the same whatever follows frame f |
 | Contract atom (`test.js`) against `denoise()`, delayed by its declared latency | 48 kHz: equal sample for sample in blocks of 1, 128, 1024 and 1 to 3000 samples, limits 20 and 0; 44.1 kHz (resample-sinc 1.2.0): equal but in the last 50 ms; with resample-sinc 1.1.2, whose arithmetic differs, 59.5 dB SNR |
 
 To rerun: `node scripts/rnnoise-reference.mjs` builds upstream and rewrites `fixtures/rnnoise.json` (and caches the little model); `python scripts/deepfilter-reference.py` (DeepFilterNet 0.5.6 in a Python 3.11 venv) writes the reference `test.js` compares with.
@@ -208,20 +264,9 @@ These rooms are mostly quiet (raw OVRL 3.17), so the gains are small. OM-LSA kee
 
 **Singing.** VocalSet (Wilkins et al., ISMIR 2018, CC BY 4.0): 40 long tones (straight, forte, pianissimo, messa di voce; 20 singers) and 20 sung phrases (straight and vibrato), alone and in living-room noise (DEMAND, from the VoiceBank+DEMAND test set) at 15 dB SNR; level change of the voice over the frames within 20 dB of the loudest. At the default 18 dB, against 0.1's processing at the same limit (heard as it is, no voice guard): held notes −1.9 dB clean and −3.4 dB in noise, 14% of frames more than 6 dB down, against −14.2 and −16.2 dB, 96% (at 10 dB SNR −4.8 against −15.6); sung phrases −0.9 and −2.0 dB against −10.2 and −14.9; the same singers' spoken phrases −0.3 and −0.8 dB against −1.7 and −3.7 (they are quiet recordings: the −20 dBFS hearing helps them). Upstream's unlimited output takes the held notes 38.7 and 37.4 dB down. The noise in the pauses drops as before (−14.1 dB against −14.3), and a 100 or 120 Hz buzz 20 dB under the voice drops in them as without the guard (−17.2 dB), in quiet and in cafe noise: it is the background, not over it.
 
-**Music.** Both models enhance speech, and to them everything else is noise: music loses at every band, and the limit only caps the loss. The first 60 s of four pieces (`vibeace` jazz, `brahms` string orchestra, `nutcracker` celesta and strings, `trumpet` solo), five chords of three VocalSet singers each, and the 50 MUSDB18 test previews (Rafii et al. 2017, 7 s of a song each, most with vocals), at 44.1 kHz; level change per band against the input, the median over the files:
+**Music.** Both models enhance speech, and to them everything else is noise: before 0.4 music lost at every band, and the limit only capped the loss (DeepFilterNet3, songs: −13 to −17 dB per band, median; unlimited, single bands of single songs lost up to 54 dB, RNNoise's up to 68). From 0.4 the music guard passes it through ([Music](#music), with the before and after per band). The first 60 s of four pieces (`vibeace` jazz, `brahms` string orchestra, `nutcracker` celesta and strings, `trumpet` solo), five chords of three VocalSet singers each, and the 50 MUSDB18 test previews (Rafii et al. 2017, 7 s of a song each, most with vocals), at 44.1 kHz, are the sets of that table.
 
-| at the default limit | 0–250 Hz | 0.25–1 kHz | 1–4 kHz | 4–8 kHz | 8–16 kHz | 16–22 kHz |
-|---|---|---|---|---|---|---|
-| RNNoise, pieces | −11.5 dB | −12.9 | −13.7 | −15.3 | −14.2 | −11.0 |
-| RNNoise, chords | −7.2 | −15.4 | −15.6 | −15.4 | −14.7 | −15.3 |
-| RNNoise, songs | −14.4 | −8.0 | −10.1 | −11.4 | −12.2 | −14.2 |
-| DeepFilterNet3, pieces | −8.6 | −9.0 | −10.9 | −14.4 | −15.5 | −14.0 |
-| DeepFilterNet3, chords | −5.8 | −3.9 | −4.9 | −9.5 | −11.1 | −3.7 |
-| DeepFilterNet3, songs | −16.9 | −13.7 | −16.5 | −13.2 | −12.7 | −16.0 |
-
-Unlimited, single bands of single songs lose up to 54 dB (DeepFilterNet3) and 68 dB (RNNoise). The voice guard keeps one held voice: it follows one pitch, not a chord or an orchestra. Neither model passes music through, because nothing at hand tells music from noisy speech reliably enough. The guard that suggests itself, passing the input through where the unlimited model takes much of what stands 10 dB or more over each band's noise floor (minimum statistics), can't be set: noise that moves stands over the floor too. DeepFilterNet3 takes more than 9 dB of it from 17 of the 504 noisy training utterances, as from 45 of the 50 songs and 3 of the 4 pieces, but from none of the chords (5 to 8.4 dB); at 12 dB, 4 utterances would pass through untouched while 10 songs and every chord would still lose; at 6 dB, 32 utterances would. RNNoise takes more than 9 dB from 32 utterances (its voice removals among them) as from every piece and chord and 40 songs. Telling music from speech takes a classifier trained for it; none ships here.
-
-To rerun: `python scripts/accuracy.py prepare` writes the band-limited inputs and decodes the MUSDB18 previews; `node scripts/accuracy.mjs SET SYSTEMS` (SET: `vbdemand`, `vbtrain`, `vbclean`, `vbtrain-clean`, either noisy set `@16000`, `@44100` or `-lp16k`, `music`) and `node scripts/accuracy.mjs rooms` write the outputs (the data sources and checksums are in its header); `python scripts/accuracy.py SET SYSTEMS`, `limits SET rnnoise 0,12,14,15,16,18,20`, `clean SET SYSTEM [LIMITS]`, `music SYSTEMS`, `presence SYSTEM` and `rooms` score them; `scripts/deepfilter-reference.py --vbdemand` writes the Python row; the classical rows come from `@audio/denoise`'s `node scripts/speech.mjs vbdemand|rooms SYSTEMS` and `python scripts/speech.py score vbdemand|rooms SYSTEMS`. Per-file scores stay in `~/.cache/audiojs/data/` (`vbdemand/scores/neural-*.csv`, `vbdemand-train/scores/neural-*.csv`, `spoken/scores.json`); the scripts regenerate outputs, skipping any already there.
+To rerun: `python scripts/accuracy.py prepare` writes the band-limited inputs and decodes the MUSDB18 previews; `python scripts/accuracy.py guard-sets` writes the music guard's labelled sets and `node scripts/accuracy.mjs guard train|test` measures it (systems `rnnoise-guard` and `dfn3-guard` are 0.4's defaults, the other rows take `music: 'enhance'`); `node scripts/accuracy.mjs SET SYSTEMS` (SET: `vbdemand`, `vbtrain`, `vbclean`, `vbtrain-clean`, either noisy set `@16000`, `@44100` or `-lp16k`, `music`) and `node scripts/accuracy.mjs rooms` write the outputs (the data sources and checksums are in its header); `python scripts/accuracy.py SET SYSTEMS`, `limits SET rnnoise 0,12,14,15,16,18,20`, `clean SET SYSTEM [LIMITS]`, `music SYSTEMS`, `presence SYSTEM` and `rooms` score them; `scripts/deepfilter-reference.py --vbdemand` writes the Python row; the classical rows come from `@audio/denoise`'s `node scripts/speech.mjs vbdemand|rooms SYSTEMS` and `python scripts/speech.py score vbdemand|rooms SYSTEMS`. Per-file scores stay in `~/.cache/audiojs/data/` (`vbdemand/scores/neural-*.csv`, `vbdemand-train/scores/neural-*.csv`, `spoken/scores.json`); the scripts regenerate outputs, skipping any already there.
 
 ## Speed and memory
 
@@ -243,6 +288,8 @@ A 128-sample render quantum lasts 2.67 ms and a frame is due every 3.75 quanta: 
 
 **DeepFilterNet3**, onnxruntime-node 1.30, 4 intra-op threads: real-time factor 0.047 in CPU on a 180 s file (8.4 s), 0.087 over the 824 short test utterances (2072 s of audio in 180 s; per-run overhead); Python DeepFilterNet (PyTorch 2.1, 4 threads) 0.067 on the same utterances. Peak RSS 436 MB over the test set, 563 MB for 180 s in 10 s chunks. The voice guard's pitch analysis adds 0.16 s of wall time per minute of audio to the model's 0.6 (one channel at 48 kHz, 4 threads); the band edge, 0.06 s of CPU. The browser path (onnxruntime-web, wasm and WebGPU) is untested here.
 
+**Music guard**: 1.1 s of CPU per minute of audio per channel (real-time factor 0.019; WebAssembly SIMD, Node 25, the machine as above), 11 s on the JS path. RNNoise through `denoise()` goes from 3.0 to 4.2 s of CPU per minute; DeepFilterNet3 skips the model where a whole input is music. The guard's state: 0.3 MB per channel, the network 3.1 MB once unpacked to float32.
+
 ## Licenses
 
 Audited 2026-09-27 against what each project states; a summary, not legal advice.
@@ -251,6 +298,9 @@ Audited 2026-09-27 against what each project states; a summary, not legal advice
 |---|---|---|---|---|
 | **RNNoise**, model 0a8755f8 (January 2025) | BSD-3-Clause (`COPYING`: Valin, Amazon, Mozilla, Xiph.Org, Borgerding) | BSD-3-Clause | `rnnoise_data-0a8755f8….tar.gz` (media.xiph.org, sha256 pinned in upstream's `model_version`): `src/rnnoise_data.c` (default), `src/rnnoise_data_little.c`, two `.pth` checkpoints. No header of their own; upstream's `autogen.sh` downloads them into `src/` and compiles them into the BSD library, and the README calls them "the models distributed with RNNoise". Trained on the corpora in `datasets.txt`: OpenSLR 30–86 (CC BY-SA 4.0) and Hi-Fi TTS (OpenSLR 109, CC BY 4.0) for speech, Xiph's noise collections (donated noise "freely available", terms in that archive, not checked) | bundled: `rnnoise.bin`, the default model through upstream's `dump_weights_blob`; the little model (1.55 MB) loads through `weights` |
 | **DeepFilterNet3**, d375b2d | MIT OR Apache-2.0 ("All code in this repository") | **unconfirmed** | `models/DeepFilterNet3_onnx.tar.gz`, `DeepFilterNet3.zip`, `DeepFilterNet3_ll_onnx.tar.gz`, in the same repository, no terms of their own. Four open issues ask whether "all code" covers them ([#697](https://github.com/Rikorose/DeepFilterNet/issues/697), [#700](https://github.com/Rikorose/DeepFilterNet/issues/700), [#709](https://github.com/Rikorose/DeepFilterNet/issues/709), [#712](https://github.com/Rikorose/DeepFilterNet/issues/712), July to September 2026), none answered; the last push was October 2024. The DeepFilterNet3 paper's abstract says "the framework as well as pretrained weights have been published under an open source license", naming none. Third parties republish them as MIT (Intel/deepfilternet-openvino on Hugging Face) or Apache-2.0 | fetched from upstream at the pinned commit, cached, never bundled or re-hosted |
+| **inaSpeechSegmenter**, speech/music/noise CNN (`smn`) | MIT (`LICENSE`, © 2018 Ina) | MIT: the repository's license; the weight files are its release assets (`models`), no terms of their own. Training data: Ina's annotated French radio and TV, not published | `keras_speech_music_noise_cnn.hdf5` (sha256 `f04b5e3c…`) | bundled: `guard.bin`, its weights folded and in float16 (`scripts/guard.py`); the feature recipe follows ina's `sidekit_mfcc.py` (from SIDEKIT, LGPL), written anew from its definitions |
+| YAMNet (Google) | Apache-2.0 | Apache-2.0 | TF Hub `yamnet/1` | not used: compared, passes more speech over music beds ([Music](#music)) |
+| Silero VAD | MIT | MIT | `silero_vad.onnx` | not used: speech against everything else, noise included |
 | DeepFilterNet 1 and 2 | same | same as DeepFilterNet3 | `models/DeepFilterNet{,2}*.{zip,tar.gz}` | not used; libDF deprecates DeepFilterNet2 |
 | GTCRN (Rong et al., ICASSP 2024) | MIT | MIT (checkpoints in the repository) | 48.2K parameters, trained on DNS3 or VCTK-DEMAND | not used: 16 kHz only, narration would lose everything above 8 kHz |
 | Demucs speech denoiser (facebookresearch/denoiser) | CC BY-NC 4.0 | CC BY-NC 4.0 | | excluded: non-commercial; archived |
@@ -260,14 +310,14 @@ Audited 2026-09-27 against what each project states; a summary, not legal advice
 
 In the browser, [shiguredo/rnnoise-wasm](https://github.com/shiguredo/rnnoise-wasm) (Apache-2.0) builds the same RNNoise commit with emscripten, and [sapphi-red/web-noise-suppressor](https://github.com/sapphi-red/web-noise-suppressor) (MIT) wraps its 2022 build next to Speex and GTCRN. This package needs no WebAssembly (it takes 419 bytes of it for speed where it can), is checked bit for bit against the C, and adds DeepFilterNet3.
 
-The package is BSD-3-Clause (the RNNoise translation and weights); `deepfilter.js` carries DeepFilterNet's MIT notice ([NOTICE](./NOTICE)).
+The package is BSD-3-Clause (the RNNoise translation and weights); `deepfilter.js` carries DeepFilterNet's MIT notice, `guard.bin` inaSpeechSegmenter's ([NOTICE](./NOTICE)).
 
 ## Reference
 
-J.-M. Valin, "A Hybrid DSP/Deep Learning Approach to Real-Time Full-Band Speech Enhancement", MMSP 2018, [arXiv:1709.08243](https://arxiv.org/abs/1709.08243). · H. Schröter, T. Rosenkranz, A. N. Escalante-B., A. Maier, "DeepFilterNet: Perceptually Motivated Real-Time Speech Enhancement", Interspeech 2023, [arXiv:2305.08227](https://arxiv.org/abs/2305.08227). · C. Valentini-Botinhao, "Noisy speech database for training speech enhancement algorithms and TTS models", University of Edinburgh, 2017, [doi:10.7488/ds/2117](https://doi.org/10.7488/ds/2117). · ITU-T P.862.2 (2007), wideband PESQ. · C. H. Taal, R. C. Hendriks, R. Heusdens, J. Jensen, "An Algorithm for Intelligibility Prediction of Time-Frequency Weighted Noisy Speech", IEEE TASLP 19(7), 2011. · J. Le Roux, S. Wisdom, H. Erdogan, J. R. Hershey, "SDR: Half-baked or Well Done?", ICASSP 2019. · C. K. A. Reddy, V. Gopal, R. Cutler, "DNSMOS P.835: A Non-Intrusive Perceptual Objective Speech Quality Metric to Evaluate Noise Suppressors", ICASSP 2022. · S. A. Figueroa, "When is double rounding innocuous?", SIGNUM Newsletter 30(3), 1995. · [xiph/rnnoise](https://gitlab.xiph.org/xiph/rnnoise) at 70f1d25 · [Rikorose/DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) at d375b2d.
+J.-M. Valin, "A Hybrid DSP/Deep Learning Approach to Real-Time Full-Band Speech Enhancement", MMSP 2018, [arXiv:1709.08243](https://arxiv.org/abs/1709.08243). · H. Schröter, T. Rosenkranz, A. N. Escalante-B., A. Maier, "DeepFilterNet: Perceptually Motivated Real-Time Speech Enhancement", Interspeech 2023, [arXiv:2305.08227](https://arxiv.org/abs/2305.08227). · C. Valentini-Botinhao, "Noisy speech database for training speech enhancement algorithms and TTS models", University of Edinburgh, 2017, [doi:10.7488/ds/2117](https://doi.org/10.7488/ds/2117). · ITU-T P.862.2 (2007), wideband PESQ. · C. H. Taal, R. C. Hendriks, R. Heusdens, J. Jensen, "An Algorithm for Intelligibility Prediction of Time-Frequency Weighted Noisy Speech", IEEE TASLP 19(7), 2011. · J. Le Roux, S. Wisdom, H. Erdogan, J. R. Hershey, "SDR: Half-baked or Well Done?", ICASSP 2019. · C. K. A. Reddy, V. Gopal, R. Cutler, "DNSMOS P.835: A Non-Intrusive Perceptual Objective Speech Quality Metric to Evaluate Noise Suppressors", ICASSP 2022. · S. A. Figueroa, "When is double rounding innocuous?", SIGNUM Newsletter 30(3), 1995. · [xiph/rnnoise](https://gitlab.xiph.org/xiph/rnnoise) at 70f1d25 · [Rikorose/DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) at d375b2d. · D. Doukhan, J. Carrive, F. Vallet, A. Larcher, S. Meignier, "An Open-Source Speaker Gender Detection Framework for Monitoring Gender Equality", ICASSP 2018 · [ina-foss/inaSpeechSegmenter](https://github.com/ina-foss/inaSpeechSegmenter), models release.
 
-**Use when:** speech with noise a statistical denoiser leaves or smears (moving noise, a busy room); live voice in a browser (RNNoise, 30 ms); files where quality is worth an 8 MB download (DeepFilterNet3).<br>
-**Not for:** music, songs included (both take 8 to 16 dB from every band at their default limits, and nothing in them tells music from noisy speech; DeepFilterNet3's voice guard keeps one held voice, RNNoise drops it); clean speech with nothing to remove through RNNoise (it gates word ends and quiet syllables, 9 to 12 dB at its default limit); installs that must stay model-free ([`@audio/denoise`](https://github.com/audiojs/denoise)); reverb as such (`dereverb`); live DeepFilterNet3 (upstream's graphs take no state).
+**Use when:** speech with noise a statistical denoiser leaves or smears (moving noise, a busy room); live voice in a browser (RNNoise, 30 ms); files where quality is worth an 8 MB download (DeepFilterNet3); programmes that mix speech and music (the music passes through untouched).<br>
+**Not for:** denoising music itself, a noisy song or concert (music passes untouched; with `music: 'enhance'` both models take 8 to 16 dB from every band); singing alone (half to two thirds of it passes, the rest is enhanced); clean speech with nothing to remove through RNNoise (it gates word ends and quiet syllables, 9 to 12 dB at its default limit); installs that must stay model-free ([`@audio/denoise`](https://github.com/audiojs/denoise)); reverb as such (`dereverb`); live DeepFilterNet3 (upstream's graphs take no state).
 
 ---
 

@@ -1,4 +1,4 @@
-/** Neural speech enhancement: RNNoise (pure JS, weights bundled) and DeepFilterNet3 (ONNX, fetched and cached). */
+/** Neural speech enhancement: RNNoise (pure JS, weights bundled) and DeepFilterNet3 (ONNX, fetched and cached); music passes through untouched. */
 
 export type Audio = Float32Array | Float32Array[] | { channelData: Float32Array[], sampleRate: number }
 
@@ -30,6 +30,8 @@ export interface DenoiseOptions extends LoadOptions {
   model?: 'rnnoise' | 'deepfilternet3' | Model
   /** attenuation limit in dB, the most the noise drops: mixes the input back in at 10^(−limit/20); default 16 for RNNoise, 18 for DeepFilterNet3 (README, API); 0 for none. DeepFilterNet3 also hears its input with the speech at −20 dBFS and, above a band-limited input's edge, a white noise floor 20 dB under it, and keeps sustained voicing it would remove (held sung notes) */
   limit?: number
+  /** 'pass' (default): speech and noise are enhanced, music (songs included) passes through untouched, as inaSpeechSegmenter's speech/music/noise CNN segments the input: DeepFilterNet3 with the whole input in view, RNNoise as its stream decides (from what has arrived: music's first second or so is denoised); the gain ramps over 200 ms at each switch. 'enhance': everything, as before 0.4 */
+  music?: 'pass' | 'enhance'
   /** DeepFilterNet3: frames (10 ms) per model run, default 1000 */
   chunk?: number
   /** DeepFilterNet3: frames of context run before each chunk after the first, default 300 */

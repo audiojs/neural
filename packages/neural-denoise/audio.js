@@ -15,14 +15,22 @@
 // most before the voice itself suffers (README, Accuracy). The limit is read per block and applies from the
 // next finished frame on.
 //
-// Channels are denoised independently; a channel's state (70 KB) is created on its first block, as the
-// worklet does, since hosts declare up to 32 channels.
+// music: 'pass' (default) has music pass through untouched, as denoise() does (guard.js): each 48 kHz input frame
+// goes to the guard too, and the output frame two before it, the one RNNoise gives back then, takes the guard's
+// decision so far; the gain between the denoised and the dry signal ramps over 200 ms, at 48 kHz, through the same
+// resampler back, and mixes at the host's rate with the input delayed by the latency, so what passes is the input
+// itself. Nothing is added to the delay: a stream decides on what has arrived, music is denoised for its first second
+// or so, and each switch comes about a second late (README, Music). 'enhance' denoises everything, as before 0.4.
+//
+// Channels are denoised independently; a channel's state (70 KB, and the guard's 0.3 MB) is created on its first
+// block, as the worklet does, since hosts declare up to 32 channels.
 
 import { model, create, FRAME, LIMIT } from './rnnoise.js'
 import { weights } from './denoise.js'
+import { guardNet, online, ramp, blend } from './guard.js'
 
 const RATE = 48000, DELAY = 2 * FRAME, PRIME = FRAME - 1, HALF = 16
-const net = model(await weights())
+const net = model(await weights()), guard = await guardNet()
 
 const sinc = x => x === 0 ? 1 : Math.sin(Math.PI * x) / (Math.PI * x)
 
@@ -89,29 +97,36 @@ function queue(len) {
 	return q
 }
 
-/** One channel at host rate sr: `run(x, y, limit)` takes host samples, gives the denoised ones `latency(sr)` later. */
+/** One channel at host rate sr: `run(x, y, limit, music)` takes host samples, gives the denoised ones `latency(sr)` later. */
 function channel(sr) {
 	let st = create(net), frame = new Float32Array(FRAME), den = new Float32Array(FRAME), z = new Float32Array(FRAME)
 	// this frame's input and the two before it: RNNoise's output for frame f is frame f − 2's time
-	let dry = new Float32Array(3 * FRAME), fill = 0, frames = 0, lim = 0, q = queue(latency(sr))
-	let back = sr === RATE ? x => { for (let k = 0; k < x.length; k++) q.push(x[k]) } : resampler(RATE, sr, q.push)
+	let dry = new Float32Array(3 * FRAME), fill = 0, frames = 0, lim = 0, pass = false, D = latency(sr)
+	let q = queue(D), gq = queue(D), dq = queue(D), decide = online(guard), next = ramp(), gz = new Float32Array(FRAME)
+	let to = q => sr === RATE ? x => { for (let k = 0; k < x.length; k++) q.push(x[k]) } : resampler(RATE, sr, q.push)
+	let back = to(q), gback = to(gq), g = new Float32Array(0), d = new Float32Array(0)
 	let push = v => {
 		frame[fill] = v * 32768; dry[(frames % 3) * FRAME + fill] = v
 		if (++fill < FRAME) return
 		st.process(frame, den)
-		// as denoise()'s offline path: the output 960 samples on, the input mixed back at `lim`
+		let on = decide(dry.subarray((frames % 3) * FRAME, (frames % 3 + 1) * FRAME))
+		// as denoise()'s offline path: the output 960 samples on, the input mixed back at `lim`, the guard's gain beside it
 		if (frames >= 2) {
-			let d = ((frames - 2) % 3) * FRAME
-			for (let k = 0; k < FRAME; k++) z[k] = (den[k] / 32768) * (1 - lim) + dry[d + k] * lim
-			back(z)
+			let o = ((frames - 2) % 3) * FRAME
+			for (let k = 0; k < FRAME; k++) { z[k] = (den[k] / 32768) * (1 - lim) + dry[o + k] * lim; gz[k] = next(!(on && pass)) }
+			back(z); gback(gz)
 		}
 		frames++; fill = 0
 	}
 	let into = sr === RATE ? x => { for (let i = 0; i < x.length; i++) push(x[i]) } : resampler(sr, RATE, push)
-	return (x, y, limit) => {
+	return (x, y, limit, music) => {
 		lim = limit ? 10 ** (-Math.abs(limit) / 20) : 0
+		pass = music !== 'enhance'
 		into(x)
-		q.pull(y)
+		for (let i = 0; i < x.length; i++) dq.push(x[i])
+		if (g.length < y.length) { g = new Float32Array(y.length); d = new Float32Array(y.length) }
+		q.pull(y); gq.pull(g.subarray(0, y.length)); dq.pull(d.subarray(0, y.length))
+		for (let i = 0; i < y.length; i++) y[i] = blend(g[i], y[i], d[i])
 	}
 }
 
@@ -120,8 +135,8 @@ export const rnnoise = (ctx) => {
 	return (inputs, outputs, params) => {
 		let inp = inputs[0], out = outputs[0]
 		if (!inp || !inp.length) return
-		let limit = params.limit[0]
-		for (let c = 0; c < inp.length; c++) (chans[c] ??= channel(sr))(inp[c], out[c], limit)
+		let limit = params.limit[0], music = params.music
+		for (let c = 0; c < inp.length; c++) (chans[c] ??= channel(sr))(inp[c], out[c], limit, music)
 	}
 }
 rnnoise.channels = 'any'
@@ -129,4 +144,5 @@ rnnoise.latency = ctx => latency(ctx.sampleRate)
 rnnoise.tail = 0
 rnnoise.params = {
 	limit: { type: 'number', min: 0, max: 100, default: LIMIT, unit: 'dB' },
+	music: { type: 'enum', values: ['pass', 'enhance'], default: 'pass' },
 }

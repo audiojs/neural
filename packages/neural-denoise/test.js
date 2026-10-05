@@ -3,9 +3,11 @@
 // pipeline (STFT, alignment, deep-filter taps, chunking) through an identity model. The little RNNoise
 // model runs when the reference script has put it in the neural cache. With the DeepFilterNet3 export in
 // the cache (the first denoise(…, { model: 'deepfilternet3' }) fetches it) the ONNX path runs; with
-// scripts/deepfilter-reference.py's output there too, it is compared against Python DeepFilterNet.
+// scripts/deepfilter-reference.py's output there too, it is compared against Python DeepFilterNet. The music guard
+// runs against its float32 reference (fixtures/guard.json, from scripts/guard.py); with VoiceBank+DEMAND's training
+// utterances in ~/.cache/audiojs/data/vbdemand-train, noisy speech is checked to pass none of its frames.
 import test, { ok, is, rejects, throws } from 'tst'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
@@ -13,6 +15,7 @@ import denoise, { load, weights, rnnoise, FRAME, MODEL } from './denoise.js'
 import { model } from './rnnoise.js'
 import { loadDeepFilter, enhance, erbWidths, voicing, bandEdge, LEVEL, FILL } from './deepfilter.js'
 import { rfft, irfft, WINDOW, N, HOP, BINS } from './fft.js'
+import { guardNet, net as guardModel, analyzer, offline, online, gains, RAMP } from './guard.js'
 import { inputs, sha } from './scripts/rnnoise-reference.mjs'
 
 const CACHE = process.env.AUDIO_NEURAL_CACHE || path.join(os.homedir(), '.cache', 'audiojs', 'neural')
@@ -154,9 +157,9 @@ test('worklet: 128-sample quanta, output = the frame API delayed by 448 samples 
 // ------------------------------------------------ audio.js manifest
 
 // the contract atom hosted as hosts run it: blocks of `size(k)` samples, then its declared latency of silence
-async function hosted(sr, chs, limit, size) {
+async function hosted(sr, chs, limit, size, music) {
 	let { rnnoise: atom } = await import('./audio.js')
-	let D = atom.latency({ sampleRate: sr, params: {} }), params = { limit: new Float32Array([limit]) }
+	let D = atom.latency({ sampleRate: sr, params: {} }), params = { limit: new Float32Array([limit]), music }
 	let proc = atom({ sampleRate: sr, maxBlockSize: 4096, maxChannels: 32, params }), n = chs[0].length + D
 	let inp = chs.map(x => { let v = new Float32Array(n); v.set(x); return v }), out = chs.map(() => new Float32Array(n))
 	for (let p = 0, k = 0, m; p < n; p += m) { m = Math.min(n - p, size(k++)); proc([inp.map(v => v.subarray(p, p + m))], [out.map(v => v.subarray(p, p + m))], params) }
@@ -252,7 +255,7 @@ test('deepfilter: a tap one frame ahead advances the band below 4.8 kHz by 480 s
 
 test('deepfilter: denoise() limits DeepFilterNet3 to 18 dB unless given a limit; 0 is none', async () => {
 	let m = await load('deepfilternet3', { weights: EXPORT, session: standIn({ gain: 0 }) }) // removes everything above 4.8 kHz
-	let x = IN['lena+noise'].subarray(0, 48000).map(v => v / 32768), run = opts => denoise(x, { sampleRate: 48000, model: m, ...opts })
+	let x = IN['lena+noise'].subarray(0, 48000).map(v => v / 32768), run = opts => denoise(x, { sampleRate: 48000, model: m, music: 'enhance', ...opts })
 	let [unset, eighteen, none] = [await run({}), await run({ limit: 18 }), await run({ limit: 0 })]
 	is(maxDiff(unset, eighteen), 0, 'default = limit 18')
 	ok(maxDiff(unset, none) > 1e-3, `limit 0 differs by up to ${maxDiff(unset, none).toExponential(1)}`)
@@ -345,6 +348,112 @@ test('deepfilter: a 16 kHz input\'s empty bands reach the network as white noise
 	m.free()
 })
 
+// ------------------------------------------------ music guard
+
+const GUARD = JSON.parse(readFileSync(new URL('./fixtures/guard.json', import.meta.url)))
+const VB = path.join(os.homedir(), '.cache', 'audiojs', 'data', 'vbdemand-train', 'noisy')
+
+// a band, synthetic: four chords of plucked harmonic tones every half second, a bass note under each, a tick of noise
+function band(sec, sr = 48000) {
+	let x = new Float32Array(Math.round(sec * sr)), s = 9, rnd = () => (s = (s * 1664525 + 1013904223) % 4294967296, s / 4294967296 - .5)
+	let chords = [[60, 64, 67], [57, 60, 64], [53, 57, 60], [55, 59, 62]], hz = m => 440 * 2 ** ((m - 69) / 12)
+	for (let b = 0; b * .5 < sec; b++) {
+		let t0 = Math.round(b * .5 * sr), c = chords[(b >> 2) % 4]
+		for (let n of [...c, c[0] - 24]) for (let h = 1; h <= 8 && hz(n) * h < 8000; h++)
+			for (let i = 0; i < sr && t0 + i < x.length; i++) x[t0 + i] += .05 / h * Math.exp(-i / sr * (2 + h)) * Math.sin(2 * Math.PI * hz(n) * h * i / sr)
+		for (let i = 0; i < 2000 && t0 + i < x.length; i++) x[t0 + i] += .1 * rnd() * Math.exp(-i / 300)
+	}
+	return x
+}
+// 16-bit mono wav → Float32Array
+function wav(file) {
+	let b = readFileSync(file), dv = new DataView(b.buffer, b.byteOffset, b.byteLength), o = 12
+	while (o < b.length) {
+		let id = b.toString('ascii', o, o + 4), len = dv.getUint32(o + 4, true)
+		if (id === 'data') return Float32Array.from({ length: len / 2 }, (_, i) => dv.getInt16(o + 8 + 2 * i, true) / 32768)
+		o += 8 + len + (len & 1)
+	}
+}
+
+test('guard: guard.bin is ina\'s network as scripts/guard.py writes it; on lena the port gives the float32 keras model\'s probabilities within 0.005, its wasm kernel and the JS loop the same bits', () => {
+	let bytes = readFileSync(new URL('./guard.bin', import.meta.url))
+	is(sha(bytes), GUARD.bin)
+	let x = IN.lena.map(v => v / 32768), [P, Q] = [true, false].map(simd => analyzer(guardModel(bytes, { simd }))(x)), d = 0
+	is(P.length, GUARD.lena.length, 'a patch every 100 ms')
+	P.forEach((p, k) => p.forEach((v, c) => d = Math.max(d, Math.abs(v - GUARD.lena[k][c]))))
+	ok(d < 5e-3, `max |p − keras| ${d.toExponential(1)} (float16 weights)`)
+	ok(P.every((p, k) => p.every((v, c) => v === Q[k][c])), 'wasm = JS, bit for bit')
+	throws(() => guardModel(bytes.subarray(0, 1000)), /guard weights/)
+})
+
+test('guard: music passes through untouched, bit for bit, at 48 and 44.1 kHz; music: \'enhance\' processes it as before 0.4 (0.3 removed it here)', async () => {
+	let m = await load('deepfilternet3', { weights: EXPORT, session: standIn({ gain: 0, tap: null }) }) // removes everything
+	for (let sr of [48000, 44100]) {
+		let x = band(6, sr), y = await denoise(x, { sampleRate: sr, model: m }), z = await denoise(x, { sampleRate: sr, model: m, music: 'enhance' })
+		is(maxDiff(y, x), 0, `${sr} Hz: the band comes back as it went in`)
+		ok(maxDiff(z, x) > .05, `music: 'enhance': processed, by up to ${maxDiff(z, x).toFixed(2)}`)
+	}
+	await rejects(() => denoise(band(1), { sampleRate: 48000, model: m, music: 'keep' }), /music is 'pass' or 'enhance'/)
+	m.free()
+	// RNNoise decides as a stream: on what has arrived, so the band's first second is denoised, the rest passes
+	let x = band(6), d = online(await guardNet()), first = -1
+	for (let i = 0, k = 0; i < x.length; i += 480, k++) if (d(x.subarray(i, i + 480)) && first < 0) first = k
+	ok(first > 0 && first < 120, `the stream passes the band from its input frame ${first} (${(first / 100).toFixed(2)} s)`)
+	let y = await denoise(x, { sampleRate: 48000 }), from = (first - 2) * 480 + RAMP
+	is(maxDiff(y.subarray(from), x.subarray(from)), 0, `rnnoise: from ${(from / 48000).toFixed(2)} s on, the band itself`)
+	ok(maxDiff(y.subarray(0, 48000), x.subarray(0, 48000)) > .01, 'before it, denoised')
+})
+
+test('guard: segments switch where the material does, the gain over a 200 ms raised cosine: band, noisy speech, band (skipped without VoiceBank+DEMAND)', async () => {
+	if (!existsSync(VB)) return console.log('  (no VoiceBank+DEMAND in ~/.cache/audiojs/data: skipped)')
+	let nn = await guardNet(), B = band(5), files = readdirSync(VB).filter(f => f.endsWith('.wav')).sort().slice(0, 4)
+	let S = files.map(f => wav(path.join(VB, f))), n = S.reduce((a, s) => a + s.length, 0), x = new Float32Array(2 * B.length + n), o = B.length
+	x.set(B); for (let s of S) { x.set(s, o); o += s.length } x.set(B, o)
+	let pass = offline(x, nn), cuts = [5, o / 48000]
+	let edges = [...pass].flatMap((v, g) => g && v !== pass[g - 1] ? [g / 100] : [])
+	ok(pass[100] && !pass[Math.round(100 * (cuts[0] + cuts[1]) / 2)] && pass.at(-100), 'the band passes, the voice is enhanced')
+	ok(edges.length === 2 && edges.every((e, i) => Math.abs(e - cuts[i]) < .5), `switches at ${edges.join(' and ')} s, the cuts at ${cuts.map(c => c.toFixed(2)).join(' and ')} s`)
+	let g = gains(pass, x.length, true), step = 0
+	for (let i = 1; i < g.length; i++) step = Math.max(step, Math.abs(g[i] - g[i - 1]))
+	ok(step <= Math.PI / 2 / RAMP * 1.001, `no jump: at most ${step.toExponential(2)} per sample, π/2 over ${RAMP}`)
+	ok(Math.abs(g[Math.round(edges[0] * 48000)] - .5) < 1e-3, 'each ramp centered on its switch')
+	ok(g.subarray(0, (edges[0] - .2) * 48000).every(v => v === 0) && g.subarray((edges[0] + .2) * 48000, (edges[1] - .2) * 48000).every(v => v === 1), 'exactly 0 and exactly 1 between the ramps')
+})
+
+test('guard: the stream decides from what has arrived: RNNoise\'s output to frame f − 2 stays the same whatever follows frame f', async () => {
+	let a = band(4), b = IN.lena.map(v => v / 32768).subarray(0, 2 * 48000), x = new Float32Array(a.length + b.length), y = new Float32Array(x.length)
+	x.set(a); y.set(a); y.set(b.map(v => -v), a.length)
+	let [u, v] = [await denoise(x, { sampleRate: 48000 }), await denoise(y, { sampleRate: 48000 })], f = a.length / 480
+	is(maxDiff(u.subarray(0, (f - 2) * 480), v.subarray(0, (f - 2) * 480)), 0, 'the same up to the change, less RNNoise\'s 960 samples')
+	ok(maxDiff(u, v) > .01, 'different after')
+})
+
+test('guard: noisy speech is enhanced, no frame passed: VoiceBank+DEMAND training utterances (skipped without them)', async () => {
+	if (!existsSync(VB)) return console.log('  (no VoiceBank+DEMAND in ~/.cache/audiojs/data: skipped)')
+	let nn = await guardNet(), files = readdirSync(VB).filter(f => f.endsWith('.wav')).sort().filter((_, i) => i % 25 === 0)
+	let passed = 0, frames = 0
+	for (let f of files) {
+		let x = wav(path.join(VB, f)), d = online(nn), on = []
+		for (let i = 0; i < x.length + 960; i += 480) { let fr = new Float32Array(480); fr.set(x.subarray(i, Math.min(i + 480, x.length))); on.push(d(fr)) }
+		let p = offline(x, nn); passed += p.reduce((s, v) => s + v, 0) + on.slice(2).reduce((s, v) => s + v, 0); frames += 2 * p.length
+	}
+	is(passed, 0, `${files.length} utterances, ${frames / 2} frames, offline and streaming: none passed`)
+})
+
+test('manifest: with music passing, the stream is denoise() sample for sample at 48 kHz, and at 44.1 kHz but the last 50 ms; music: \'enhance\' denoises it all', async () => {
+	for (let sr of [48000, 44100]) {
+		let a = band(3, sr), b = IN['lena+noise'].subarray(0, 2 * sr).map(v => v / 32768), x = new Float32Array(a.length + b.length + a.length)
+		x.set(a); x.set(b, a.length); x.set(a, a.length + b.length)
+		let { out: [y] } = await hosted(sr, [x], 16, () => 1000), cut = sr === 48000 ? x.length : x.length - sr / 20
+		let want = await denoise(x, { sampleRate: sr })
+		is(maxDiff(y.subarray(0, cut), want.subarray(0, cut)), 0, `${sr} Hz: equal to denoise()`)
+		let tail = Math.round(2.5 * sr)
+		is(maxDiff(y.subarray(tail, a.length), x.subarray(tail, a.length)), 0, `${sr} Hz: the band passes`)
+		let { out: [e] } = await hosted(sr, [x], 16, () => 1000, 'enhance')
+		is(maxDiff(e.subarray(0, cut), (await denoise(x, { sampleRate: sr, music: 'enhance' })).subarray(0, cut)), 0, `${sr} Hz, 'enhance': denoise() with music: 'enhance'`)
+	}
+})
+
 test('denoise: empty, one sample, shorter than a frame, silence: the same length back, finite, silence kept (both models)', async () => {
 	let dfn = await load('deepfilternet3', { weights: EXPORT, session: standIn() }), rnn = await load()
 	for (let [name, model] of [['rnnoise', rnn], ['deepfilternet3', dfn]]) for (let rate of [48000, 16000]) {
@@ -377,7 +486,7 @@ test('deepfilternet3: enhance() with upstream\'s settings against Python DeepFil
 		for (let i = 0; i + 2400 <= x.length; i += 2400) p.push(x.subarray(i, i + 2400).reduce((s, v) => s + v * v, 0) / 2400)
 		p.sort((a, b) => b - a)
 		let lvl = 10 * Math.log10(p.slice(0, p.length >> 1).reduce((s, v) => s + v, 0) / (p.length >> 1))
-		let u = await denoise(x, { sampleRate: 48000, model: m, limit: 0, chunk: Infinity }), v = await enhance(x, m.net, { chunk: Infinity, gain: 10 ** ((-20 - lvl) / 20), voice: true })
+		let u = await denoise(x, { sampleRate: 48000, model: m, limit: 0, chunk: Infinity, music: 'enhance' }), v = await enhance(x, m.net, { chunk: Infinity, gain: 10 ** ((-20 - lvl) / 20), voice: true })
 		ok(maxDiff(u, v) < 1e-6, `denoise() = enhance() heard at -20 dBFS (the speech at ${lvl.toFixed(1)}) with the voice guard`)
 	} finally { m.free() }
 })

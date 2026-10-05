@@ -1,7 +1,7 @@
 {
   "name": "@audio/neural-denoise",
-  "version": "0.3.0",
-  "description": "Neural speech enhancement: RNNoise (Valin 2018) in pure JS, bit-exact to its C, weights bundled; DeepFilterNet3 through ONNX Runtime, matching the Python original",
+  "version": "0.4.0",
+  "description": "Neural speech enhancement: RNNoise (Valin 2018) in pure JS, bit-exact to its C, weights bundled; DeepFilterNet3 through ONNX Runtime, matching the Python original; music passes through untouched (inaSpeechSegmenter's speech/music/noise CNN)",
   "type": "module",
   "sideEffects": false,
   "main": "denoise.js",
@@ -17,6 +17,7 @@
     },
     "./worklet": "./worklet.js",
     "./rnnoise.bin": "./rnnoise.bin",
+    "./guard.bin": "./guard.bin",
     "./package.json": "./package.json"
   },
   "files": [
@@ -28,6 +29,9 @@
     "worklet.js",
     "rnnoise.bin",
     "gemv.wat",
+    "guard.js",
+    "guard.bin",
+    "gemm.wat",
     "index.d.ts",
     "LICENSE",
     "NOTICE",
@@ -61,7 +65,8 @@
   "author": "Dmitry Iv. <dfcreative@gmail.com>",
   "contributors": [
     "Jean-Marc Valin, Xiph.Org Foundation, Mozilla, Amazon and the RNNoise authors (RNNoise)",
-    "Hendrik Schröter (DeepFilterNet)"
+    "Hendrik Schröter (DeepFilterNet)",
+    "David Doukhan, Ina (inaSpeechSegmenter)"
   ],
   "audio": "./audio.js",
   "engines": {

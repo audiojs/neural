@@ -15,6 +15,13 @@
 //                               cut, as MP3 encoders make it
 //   music                       repair/ pieces, VocalSet chords, MUSDB18 test previews at 44.1 kHz (repair/out-neural/)
 //
+//   node scripts/accuracy.mjs guard train|test         the music guard's decisions on the labelled sets that
+//                               `python scripts/accuracy.py guard-sets` writes (~/.cache/audiojs/data/guard/): per set, the
+//                               share of active 10 ms frames (within 40 dB of the 99th-percentile frame) passed, offline
+//                               (DeepFilterNet3's) and streaming (RNNoise's), and the files mostly passed; per programme
+//                               set, speech frames enhanced and music frames passed, 0.5 s either side of each cut left out,
+//                               and the median delay of each switch
+//
 // Data. VoiceBank+DEMAND (Valentini-Botinhao 2017, CC BY 4.0, doi:10.7488/ds/2117):
 // https://datashare.ed.ac.uk/bitstream/handle/10283/2791/{clean,noisy}_testset_wav.zip, MD5 34eb1c0b… and
 // fb1b86ca… as DataShare lists them, unzipped into ~/.cache/audiojs/data/vbdemand/. vbtrain: 18 utterances of each of
@@ -38,6 +45,7 @@ import resample from '@audio/resample-sinc'
 import lena from 'audio-lena/raw'
 import denoise, { load } from '../denoise.js'
 import { enhance, level, LEVEL } from '../deepfilter.js'
+import { guardNet, offline, online } from '../guard.js'
 
 const DATA = path.join(os.homedir(), '.cache', 'audiojs', 'data')
 
@@ -79,15 +87,18 @@ async function before(x, rate, model, limit) {
 let audio, handles = {}
 const CLASSICAL = ['omlsa', 'wiener', 'specsub', 'enhance-denoise', 'enhance']
 const run = fx => async (x, rate) => (await fx(audio.from([x], { sampleRate: rate })).read())[0].subarray(0, x.length)
+// the rows before 0.4 hear music as noise (music: 'enhance'); -guard rows are 0.4's defaults, music passed
 const SYSTEMS = {
-	'rnnoise': (x, rate) => denoise(x, { sampleRate: rate, model: handles.rnnoise, limit: 0 }),
-	'rnnoise-little': (x, rate) => denoise(x, { sampleRate: rate, model: handles.little, limit: 0 }),
-	'rnnoise-limit16': (x, rate) => denoise(x, { sampleRate: rate, model: handles.rnnoise }),
+	'rnnoise': (x, rate) => denoise(x, { sampleRate: rate, model: handles.rnnoise, limit: 0, music: 'enhance' }),
+	'rnnoise-little': (x, rate) => denoise(x, { sampleRate: rate, model: handles.little, limit: 0, music: 'enhance' }),
+	'rnnoise-limit16': (x, rate) => denoise(x, { sampleRate: rate, model: handles.rnnoise, music: 'enhance' }),
+	'rnnoise-guard': (x, rate) => denoise(x, { sampleRate: rate, model: handles.rnnoise }),
 	'dfn3-upstream': (x, rate) => rate === 48000 ? enhance(x, handles.dfn3.net, { limit: 0 }) : null,
-	'dfn3': (x, rate) => denoise(x, { sampleRate: rate, model: handles.dfn3, limit: 0 }),
-	'dfn3-limit18': (x, rate) => denoise(x, { sampleRate: rate, model: handles.dfn3 }),
-	'dfn3-limit12': (x, rate) => denoise(x, { sampleRate: rate, model: handles.dfn3, limit: 12 }),
-	'dfn3-chunk': (x, rate) => denoise(x, { sampleRate: rate, model: handles.dfn3, limit: 0, chunk: 100, warmup: 100, fade: 20 }),
+	'dfn3': (x, rate) => denoise(x, { sampleRate: rate, model: handles.dfn3, limit: 0, music: 'enhance' }),
+	'dfn3-limit18': (x, rate) => denoise(x, { sampleRate: rate, model: handles.dfn3, music: 'enhance' }),
+	'dfn3-limit12': (x, rate) => denoise(x, { sampleRate: rate, model: handles.dfn3, limit: 12, music: 'enhance' }),
+	'dfn3-guard': (x, rate) => denoise(x, { sampleRate: rate, model: handles.dfn3 }),
+	'dfn3-chunk': (x, rate) => denoise(x, { sampleRate: rate, model: handles.dfn3, limit: 0, chunk: 100, warmup: 100, fade: 20, music: 'enhance' }),
 	'dfn3-0.2': (x, rate) => before(x, rate, handles.dfn3, 0),
 	'dfn3-0.2-limit18': (x, rate) => before(x, rate, handles.dfn3, 18),
 	'raw': x => x,
@@ -166,12 +177,54 @@ function music() {
 	return inputs
 }
 
+// the guard's decision per 48 kHz frame: offline (DeepFilterNet3's) and as a stream decides it (RNNoise's: output frame
+// f takes the decision made once input frame f + 2 is in)
+function decisions(x, nn) {
+	let d = online(nn), on = []
+	for (let i = 0; i < x.length + 960; i += 480) { let f = new Float32Array(480); f.set(x.subarray(i, Math.min(i + 480, x.length))); on.push(d(f)) }
+	return { offline: offline(x, nn), streaming: Uint8Array.from(on.slice(2)) }
+}
+function activeFrames(x) {
+	let n = Math.floor(x.length / 480), p = new Float64Array(n)
+	for (let g = 0; g < n; g++) { let s = 0; for (let i = g * 480; i < g * 480 + 480; i++) s += x[i] * x[i]; p[g] = s / 480 }
+	let top = Float64Array.from(p).sort()[Math.floor(.99 * (n - 1))]
+	return Array.from(p, v => v > top * 1e-4)
+}
+async function guard(split) {
+	let nn = await guardNet(), dir = path.join(DATA, 'guard'), pct = (a, b) => (100 * a / b).toFixed(1)
+	for (let set of readdirSync(dir).filter(s => s.startsWith(split + '-')).sort()) {
+		let rate = +readFileSync(path.join(dir, set, 'rate'), 'utf8'), files = ls(path.join(dir, set), '.f32'), row = {}
+		for (let f of files) {
+			let x = f32(path.join(dir, set, f)), lab = existsSync(path.join(dir, set, f.replace('.f32', '.lab'))) && readFileSync(path.join(dir, set, f.replace('.f32', '.lab')))
+			if (rate !== 48000) x = resample(x, { from: rate, to: 48000 })
+			let A = activeFrames(x)
+			for (let [mode, v] of Object.entries(decisions(x, nn))) {
+				let r = row[mode] ??= { pass: 0, n: 0, files: 0, sp: 0, spn: 0, mu: 0, mun: 0, lag: [] }
+				if (!lab) {
+					let a = 0, n = 0
+					for (let g = 0; g < A.length; g++) if (A[g]) { n++; a += v[g] }
+					r.pass += a; r.n += n; r.files += n && a / n > .5
+					continue
+				}
+				let cuts = []
+				for (let g = 1; g < lab.length; g++) if (lab[g] !== lab[g - 1]) cuts.push(g)
+				for (let g = 0; g < lab.length; g++) if (!cuts.some(c => Math.abs(g - c) < 50)) lab[g] ? (r.spn++, r.sp += !v[g]) : (r.mun++, r.mu += v[g])
+				// delay of each switch: from the cut to the first frame decided as the new segment is
+				for (let c of cuts) { let g = c; while (g < lab.length && v[g] !== +!lab[c]) g++; r.lag.push((g - c) / 100) }
+			}
+		}
+		let fmt = r => r.spn ? `speech enhanced ${pct(r.sp, r.spn)}%, music passed ${pct(r.mu, r.mun)}%, switch delay median ${r.lag.sort((a, b) => a - b)[r.lag.length >> 1].toFixed(2)} s` : `${pct(r.pass, r.n)}% passed (${r.files} of ${files.length} files mostly)`
+		console.log(`${set.padEnd(15)} offline: ${fmt(row.offline).padEnd(36)} streaming: ${fmt(row.streaming)}`)
+	}
+}
+
 let [what, systems, shard = '0/1'] = process.argv.slice(2), vb = what && voicebank(what), [k, n] = shard.split('/').map(Number)
 if (vb) await each(vb[0].filter((_, i) => i % n === k), systems.split(','), vb[1])
+else if (what === 'guard') await guard(systems)
 else if (what === 'music') await each(music().filter((_, i) => i % n === k), systems.split(','), path.join(DATA, 'repair', 'out-neural'))
 else if (what === 'rooms') {
 	let dir = path.join(DATA, 'spoken')
 	let inputs = Object.keys(ROOMS).map(name => [name, 48000, () => f32(path.join(dir, name + '.f32'))])
 	inputs.push(['lena', 48000, () => resample(new Float32Array(lena), { from: 44100, to: 48000 })])
-	await each(inputs, ['raw', 'omlsa', 'enhance-denoise', 'rnnoise', 'rnnoise-limit16', 'dfn3-upstream', 'dfn3', 'dfn3-limit18', 'dfn3-0.2-limit18', 'dfn3-limit12'].filter(s => systems ? systems.split(',').includes(s) : true), path.join(dir, 'out'))
-} else console.log('usage: node scripts/accuracy.mjs vbdemand|vbclean|vbtrain|vbtrain-clean|SET@RATE|SET-lp16k|music SYSTEMS [SHARD/N] | rooms [SYSTEMS]')
+	await each(inputs, ['raw', 'omlsa', 'enhance-denoise', 'rnnoise', 'rnnoise-limit16', 'rnnoise-guard', 'dfn3-upstream', 'dfn3', 'dfn3-limit18', 'dfn3-0.2-limit18', 'dfn3-limit12', 'dfn3-guard'].filter(s => systems ? systems.split(',').includes(s) : true), path.join(dir, 'out'))
+} else console.log('usage: node scripts/accuracy.mjs vbdemand|vbclean|vbtrain|vbtrain-clean|SET@RATE|SET-lp16k|music SYSTEMS [SHARD/N] | rooms [SYSTEMS] | guard train|test')
