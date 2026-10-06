@@ -13,12 +13,15 @@
 //
 // A patch every STEP frames (ina takes one every 2; on the training material every 10 decides the same, at a fifth of
 // the work). Offline, the classes become segments as ina makes them, by Viterbi over the whole input: three states,
-// a switch costing 10^-80 per 20 ms (ina's SpeechMusicNoise, diag_trans_exp(80)). A stream can only use what has
-// arrived: the forward recursion of the same chain, for two states (music, the rest), keeps the log-odds of music,
-// bounded at ±BOUND, a patch moving them by at most ln(1/FLOOR), each patch PRIOR nats in favour of speech; it
-// switches to music above HYST and back below 0 (hysteresis). Either way, music passes (the enhanced signal's gain 0),
-// speech and noise are enhanced (gain 1), and the gain moves over RAMP samples, raised cosine: offline centered on the
-// segment boundary, streaming from the decision on.
+// a switch costing 10^-80 per 20 ms (ina's SpeechMusicNoise, diag_trans_exp(80)), each patch PRIOR nats in favour of
+// speech (from 0.5): a voice under a music bed as loud as itself reaches ina as music half the time, speech at a mean
+// probability of 0.47, songs at 0.01; PRIOR is the most that passes every frame of the training songs and
+// accompaniments passed without it (README, Music). A stream can only use what has arrived: the forward recursion of
+// the same chain, for two states (music, the rest), keeps the log-odds of music, bounded at ±BOUND, a patch moving them
+// by at most ln(1/FLOOR), each patch PRIOR nats in favour of speech; it switches to music above HYST and back below 0
+// (hysteresis). Either way, music passes (the enhanced signal's gain 0), speech and noise are enhanced (gain 1), and
+// the gain moves over RAMP samples, raised cosine: offline centered on the segment boundary, streaming from the
+// decision on.
 //
 // The products of the three upper convolutions and the dense layers run in a WebAssembly SIMD kernel (gemm.wat) or
 // its JS form, the same float ops in the same order, so the same bits either way.
@@ -281,10 +284,11 @@ export function offline(x, nn) {
 	let a = analyzer(nn), P = [...a(x), ...a.end()], T = P.length, n = Math.ceil(x.length / 480), pass = new Uint8Array(n)
 	if (!T) return pass
 	// V: the best path's log-likelihood ending in each state (speech, music, noise); B: the state it came from. Every
-	// switch costs COST; a patch of silence scores all states alike. Ties go to the lower state, as numpy's argmax.
+	// switch costs COST, speech gains PRIOR a patch; a patch of silence scores all states alike. Ties go to the lower
+	// state, as numpy's argmax.
 	let V = [0, 0, 0], B = new Uint8Array(T * 3)
 	for (let t = 0; t < T; t++) {
-		let e = P[t] ? P[t].map(p => lp(p, 1e-10)) : [0, 0, 0], j = V.indexOf(Math.max(...V))
+		let e = P[t] ? P[t].map((p, s) => lp(p, 1e-10) + (s ? 0 : PRIOR)) : [0, 0, 0], j = V.indexOf(Math.max(...V))
 		V = V.map((v, s) => { let b = V[j] - COST > v ? j : s; B[t * 3 + s] = b; return (b === s ? v : V[j] - COST) + e[s] })
 	}
 	let music = new Uint8Array(T)

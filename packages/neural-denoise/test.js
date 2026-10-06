@@ -11,9 +11,9 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
-import denoise, { load, weights, rnnoise, FRAME, MODEL } from './denoise.js'
+import denoise, { load, weights, rnnoise, mixback, FRAME, MODEL } from './denoise.js'
 import { model } from './rnnoise.js'
-import { loadDeepFilter, enhance, erbWidths, voicing, bandEdge, LEVEL, FILL } from './deepfilter.js'
+import { loadDeepFilter, enhance, erbWidths, voicing, bandEdge, LEVEL, FILL, FLOOR } from './deepfilter.js'
 import { rfft, irfft, WINDOW, N, HOP, BINS } from './fft.js'
 import { guardNet, net as guardModel, analyzer, offline, online, gains, RAMP } from './guard.js'
 import { inputs, sha } from './scripts/rnnoise-reference.mjs'
@@ -259,6 +259,8 @@ test('deepfilter: denoise() limits DeepFilterNet3 to 18 dB unless given a limit;
 	let [unset, eighteen, none] = [await run({}), await run({ limit: 18 }), await run({ limit: 0 })]
 	is(maxDiff(unset, eighteen), 0, 'default = limit 18')
 	ok(maxDiff(unset, none) > 1e-3, `limit 0 differs by up to ${maxDiff(unset, none).toExponential(1)}`)
+	is(maxDiff(unset, mixback(x, none)), 0, 'the unlimited output with the input mixed back by mixback()')
+	is(maxDiff(await run({ floor: 0 }), mixback(x, none, { floor: 0 })), 0, 'floor 0: a constant 18 dB')
 	m.free()
 })
 
@@ -305,6 +307,27 @@ test('deepfilter: the voice guard keeps a held vowel a model would remove, and n
 	let kept = span(y, 60000, 132000) - span(v, 12000, 84000)
 	ok(kept > -3, `the vowel: ${kept.toFixed(1)} dB of it kept`)
 	ok(span(y, 0, 40000) < -200 && span(y, 152000, x.length) < -200, 'the noise around it: removed')
+})
+
+// a perfect model (y the voice, a 220 Hz tone) and white noise `db` dB under the voice: how far under the voice
+// mixback() leaves the noise
+test('deepfilter: mixback() drops quiet noise by the limit and takes loud noise down to the floor under the voice, frame by frame', () => {
+	let n = 4 * 48000, s = Float32Array.from({ length: n }, (_, i) => .1 * Math.sin(2 * Math.PI * 220 * i / 48000)), w = white(n, 1, 3)
+	let k = db => .1 / Math.SQRT2 * 10 ** (-db / 20) * Math.sqrt(12), under = (r, a = 0, b = n) => span(s, a, b) - span(r, a, b)
+	let left = (db, o) => under(mixback(s.map((v, i) => v + k(db) * w[i]), s, o).map((v, i) => v - s[i]))
+	ok(Math.abs(left(40) - 58) < .2, `noise 40 dB under the voice: ${left(40).toFixed(1)} dB under, the limit's 18 dB down`)
+	ok(Math.abs(left(25) - 43) < .2, `25 dB under: ${left(25).toFixed(1)}, 18 down`)
+	ok(Math.abs(left(10) - FLOOR) < .2, `10 dB under: ${left(10).toFixed(1)}, at the floor (${FLOOR})`)
+	ok(Math.abs(left(-5) - FLOOR) < .2, `5 dB over: ${left(-5).toFixed(1)}, at the floor`)
+	ok(Math.abs(left(10, { floor: 0 }) - 28) < .2 && Math.abs(left(10, { floor: 30 }) - 30) < .2, 'floor 0: 18 dB down, as before 0.5; floor 30: 30 under')
+	ok(Math.abs(left(40, { limit: 6 }) - 46) < .2 && Math.abs(left(10, { limit: 6 }) - FLOOR) < .2, 'limit 6: quiet noise 6 dB down, loud noise at the floor')
+	is(maxDiff(mixback(s.map((v, i) => v + w[i]), s, { limit: 0 }), s), 0, 'limit 0: the model\'s output')
+	// loud noise for 2 s, then quiet: each as above, 0.5 s from the change
+	let x = s.map((v, i) => v + k(i < n / 2 ? 10 : 40) * w[i]), r = mixback(x, s).map((v, i) => v - s[i])
+	let a = under(r, 0, 72000), b = under(r, 120000, n)
+	ok(Math.abs(a - FLOOR) < .3 && Math.abs(b - 58) < .3, `the noise drops 30 dB: ${a.toFixed(1)} then ${b.toFixed(1)} dB under the voice`)
+	let y = s.slice(); y.set(x.subarray(0, 48000))
+	is(maxDiff(mixback(x, y).subarray(0, 48000), x.subarray(0, 48000)), 0, 'where input and output agree (music passed): the input, bit for bit')
 })
 
 test('deepfilter: bandEdge() finds the band an input fills, at its own rate', () => {
@@ -438,6 +461,20 @@ test('guard: noisy speech is enhanced, no frame passed: VoiceBank+DEMAND trainin
 		let p = offline(x, nn); passed += p.reduce((s, v) => s + v, 0) + on.slice(2).reduce((s, v) => s + v, 0); frames += 2 * p.length
 	}
 	is(passed, 0, `${files.length} utterances, ${frames / 2} frames, offline and streaming: none passed`)
+})
+
+// a voice under a song's accompaniment as loud as itself (active levels, 10 ms frames within 35 dB of the 99th
+// percentile): speaker p226's first five clean training utterances over a MUSDB18 training preview's drums, bass and
+// other (scripts/accuracy.py guard-sets). 0.4 passed all 17.4 s of it as music, the voice left under the band
+test('guard: a voice under a music bed as loud as itself is enhanced, offline: speech gains PRIOR a patch (skipped without the data)', async () => {
+	let clean = VB.replace(/noisy$/, 'clean'), bed = path.join(VB, '..', '..', 'guard', 'train-instr', 'Bill Chudziak - Children Of No-one.f32')
+	if (!existsSync(clean) || !existsSync(bed)) return console.log('  (no VoiceBank+DEMAND or guard sets in ~/.cache/audiojs/data: skipped)')
+	let us = readdirSync(clean).filter(f => f.startsWith('p226')).sort().slice(0, 5).map(f => wav(path.join(clean, f)))
+	let c = new Float32Array(us.reduce((n, u) => n + u.length, 0)); us.reduce((o, u) => (c.set(u, o), o + u.length), 0)
+	let a = (await import('@audio/resample-sinc')).default(f32(bed), { from: 44100, to: 48000 }), b = c.map((_, i) => a[i % a.length])
+	let active = x => { let p = []; for (let i = 0; i + 480 <= x.length; i += 480) p.push(x.subarray(i, i + 480).reduce((s, v) => s + v * v, 0) / 480); let q = [...p].sort((u, v) => u - v)[Math.floor(.99 * (p.length - 1))] * 10 ** -3.5, on = p.filter(v => v > q); return on.reduce((s, v) => s + v, 0) / on.length }
+	let g = Math.sqrt(active(c) / active(b)), pass = offline(c.map((v, i) => v + g * b[i]), await guardNet()), share = pass.reduce((s, v) => s + v, 0) / pass.length
+	ok(share < .5, `${(100 * share).toFixed(0)}% of its frames passed (0.4: 100%)`)
 })
 
 test('manifest: with music passing, the stream is denoise() sample for sample at 48 kHz, and at 44.1 kHz but the last 50 ms; music: \'enhance\' denoises it all', async () => {

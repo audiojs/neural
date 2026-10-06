@@ -5,13 +5,13 @@
 
 import resample from '@audio/resample-sinc'
 import { model as parseRNNoise, create, FRAME, LIMIT as RNNOISE_LIMIT } from './rnnoise.js'
-import { loadDeepFilter, enhance, level, bandEdge, MODEL, LEVEL, LIMIT as DFN_LIMIT } from './deepfilter.js'
+import { loadDeepFilter, enhance, level, bandEdge, MODEL, LEVEL, LIMIT as DFN_LIMIT, FLOOR } from './deepfilter.js'
 import { guardNet, offline, online, gains, blend } from './guard.js'
 
 export { create as rnnoise, FRAME } from './rnnoise.js'
 export { MODEL } from './deepfilter.js'
 
-const RATE = 48000
+const RATE = 48000, SMOOTH = 0.5
 // the attenuation limit (dB) each model gets when opts.limit is not given; 0 is upstream's output
 const LIMITS = { rnnoise: RNNOISE_LIMIT, deepfilternet3: DFN_LIMIT }
 
@@ -51,22 +51,56 @@ export default async function denoise(audio, opts = {}) {
 	if (music !== 'pass' && music !== 'enhance') throw new TypeError(`neural-denoise: music is 'pass' or 'enhance', not ${music}`)
 	let handle = typeof opts.model === 'object' && opts.model ? opts.model : await load(opts.model, opts)
 	try {
-		let out = [], limit = opts.limit ?? LIMITS[handle.model], nn = music === 'pass' ? await guardNet() : null
+		let out = [], limit = opts.limit ?? LIMITS[handle.model], nn = music === 'pass' ? await guardNet() : null, dfn = handle.model !== 'rnnoise'
 		for (let ch of channels) {
 			let x = rate === RATE ? Float32Array.from(ch) : resample(Float32Array.from(ch), { from: rate, to: RATE }), y, pass
 			// RNNoise decides as its stream does (guard.js online()), DeepFilterNet3 with the whole input in view
-			if (handle.model === 'rnnoise') ({ y, pass } = rnnoiseOffline(x, handle.net, limit, nn))
+			if (!dfn) ({ y, pass } = rnnoiseOffline(x, handle.net, limit, nn))
 			else {
 				pass = nn && offline(x, nn)
-				y = pass?.every(Boolean) ? x : await enhance(x, handle.net, { ...opts, limit, gain: 10 ** ((LEVEL - level(x)) / 20), edge: bandEdge(ch, rate), voice: true })
+				y = pass?.every(Boolean) ? x : await enhance(x, handle.net, { ...opts, limit: 0, gain: 10 ** ((LEVEL - level(x)) / 20), edge: bandEdge(ch, rate), voice: true })
 			}
 			if (rate !== RATE) y = fit(resample(y, { from: RATE, to: rate }), ch.length)
-			out.push(pass ? mix(y, ch, gains(pass, x.length, handle.model !== 'rnnoise'), rate) : y)
+			if (pass) y = mix(y, ch, gains(pass, x.length, dfn), rate)
+			out.push(dfn ? mixback(ch, y, { limit, floor: opts.floor, sampleRate: rate }) : y)
 		}
 		return audio instanceof Float32Array ? out[0] : Array.isArray(audio) ? out : { ...audio, channelData: out, sampleRate: rate }
 	} finally {
 		if (handle !== opts.model) handle.free()
 	}
+}
+
+/**
+ * mixback(x, y, { limit, floor, sampleRate }) → y + a·(x − y): the input x mixed back into a model's output y, the noise
+ * the model took (x − y) back at gain a. a = 10^(−limit/20), so the noise drops by `limit` dB and room tone stays; where
+ * the noise stands higher than `floor` dB under the voice, a falls until it lies there, so noise loud against the voice
+ * is not merely turned down. Per 10 ms frame: the noise's mean power over the 0.5 s around it against the voice's
+ * level, the louder half of y's 50 ms frames (level()); a interpolated between frames. Where x and y agree (music the
+ * guard passed) the output is y bit for bit. limit 0: y itself, the model's whole removal; floor 0: a constant
+ * 10^(−limit/20), as before 0.5. denoise() applies it to DeepFilterNet3; `audio`'s deepfilter op to the unlimited
+ * output it keeps.
+ */
+export function mixback(x, y, { limit = DFN_LIMIT, floor = FLOOR, sampleRate = RATE } = {}) {
+	let n = x.length, out = new Float32Array(n), cap = limit ? 10 ** (-Math.abs(limit) / 20) : 0
+	if (!cap) { out.set(y.subarray(0, n)); return out }
+	if (!floor) { for (let i = 0; i < n; i++) out[i] = y[i] + cap * (x[i] - y[i]); return out }
+	// the noise's energy per frame, summed (c[k]: frames before k), and the frames' mean over the window around each
+	let F = Math.max(1, Math.round(sampleRate / 100)), K = Math.ceil(n / F), c = new Float64Array(K + 1), g = new Float64Array(K), h = Math.round(50 * SMOOTH)
+	for (let k = 0; k < K; k++) {
+		let s = 0, e = Math.min(n, (k + 1) * F)
+		for (let i = k * F; i < e; i++) s += (x[i] - y[i]) ** 2
+		c[k + 1] = c[k] + s
+	}
+	let voice = 10 ** ((level(y, sampleRate) - Math.abs(floor)) / 10)
+	for (let k = 0; k < K; k++) {
+		let a = Math.max(0, k - h), b = Math.min(K, k + h + 1)
+		g[k] = Math.min(cap, Math.sqrt(voice / Math.max((c[b] - c[a]) / (Math.min(n, b * F) - a * F), 1e-30)))
+	}
+	for (let i = 0; i < n; i++) {
+		let t = i / F - .5, k = Math.min(K - 1, Math.max(0, Math.floor(t))), w = Math.min(1, Math.max(0, t - k))
+		out[i] = y[i] + (k + 1 < K ? g[k] + w * (g[k + 1] - g[k]) : g[k]) * (x[i] - y[i])
+	}
+	return out
 }
 
 // the enhanced y where the gain g (at 48 kHz) is 1, the input x where it is 0: music passes untouched

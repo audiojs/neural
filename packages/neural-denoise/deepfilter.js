@@ -38,6 +38,12 @@ export const MODEL = 'https://raw.githubusercontent.com/Rikorose/DeepFilterNet/d
 // rise; unlimited, the pauses of home narrations fall to digital silence (README, Accuracy).
 export const LIMIT = 18
 
+// The floor, dB under the voice, to which denoise() takes noise the limit would leave closer to it (mixback() in
+// denoise.js): the limit alone keeps room tone, and keeps noise as loud as the voice 18 dB under it. 40 dB under a voice
+// at -20 dBFS is ACX's -60 dBFS floor; on audio's bench/rx/isolate.mjs tune split 35, 40 and 45 score PESQ 1.96, 1.98,
+// 1.98 (0: 1.75), on VoiceBank+DEMAND's training speakers DNSMOS SIG 3.38, 3.36, 3.35 (0: 3.41) (README, Measured).
+export const FLOOR = 40
+
 // The level, dBFS, at which denoise() has the network hear the speech (`gain`): the median of the VoiceBank+DEMAND
 // test set it scores its published PESQ on (level(), -20.2); its features are not level-free (README, DeepFilterNet3).
 export const LEVEL = -20
@@ -136,9 +142,9 @@ const linspace = (a, b, n) => { let step = f(f(f(b) - f(a)) / (n - 1)); return F
 
 // ------------------------------------------------ input analysis
 
-// level(x) → the speech level, dBFS: mean power of the louder half of 50 ms frames at 48 kHz (LEVEL where there is none)
-export function level(x) {
-	let F = 2400, p = []
+// level(x, rate) → the speech level, dBFS: mean power of the louder half of 50 ms frames (LEVEL where there is none)
+export function level(x, rate = 48000) {
+	let F = Math.round(rate / 20), p = []
 	for (let i = 0; i + F <= x.length; i += F) { let s = 0; for (let j = i; j < i + F; j++) s += x[j] * x[j]; p.push(s / F) }
 	p.sort((a, b) => b - a)
 	let k = Math.max(1, p.length >> 1), s = 0
