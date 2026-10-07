@@ -3,7 +3,7 @@
 // Real-weight tests run when the exported weights and their reference separations exist under
 // $AUDIO_NEURAL_CACHE or ~/.cache/audiojs/neural (scripts/export-*.py --verify writes both).
 import test, { ok, is, rejects } from 'tst'
-import { existsSync, readFileSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync, rmSync } from 'node:fs'
 import http from 'node:http'
 import { createHash } from 'node:crypto'
 import os from 'node:os'
@@ -472,7 +472,7 @@ test('models: each hosted compact file is pinned to its revision and SHA-256', a
 // reads it from there after, offline too
 test('separate: Node fetches a hosted compact file into the cache once, then reads it offline', async () => {
 	if (await offline()) return
-	let cache = process.env.AUDIO_NEURAL_CACHE, dir = mkdtempSync(path.join(os.tmpdir(), 'neural-separate-')), rev = REVISIONS.tiger
+	let cache = process.env.AUDIO_NEURAL_CACHE, dir = mkdtempSync(path.join(os.tmpdir(), 'neural-separate-')), rev = REVISIONS.tiger, empty
 	let seen, x = new Float32Array(4410), session = spec => { seen = spec; throw new Error('seen') }
 	process.env.AUDIO_NEURAL_CACHE = dir
 	try {
@@ -484,9 +484,10 @@ test('separate: Node fetches a hosted compact file into the cache once, then rea
 		seen = null
 		await rejects(() => separate([x], { sampleRate: 44100, model: 'tiger', session }), /seen/)
 		is(seen, 'file://' + file, 'read again without the network')
-		process.env.AUDIO_NEURAL_CACHE = mkdtempSync(path.join(os.tmpdir(), 'neural-separate-'))
+		process.env.AUDIO_NEURAL_CACHE = empty = mkdtempSync(path.join(os.tmpdir(), 'neural-separate-'))
 		await rejects(() => separate([x], { sampleRate: 44100, model: 'tiger', session }), /tiger weights not found: .* \(neural-runtime: fetch failed/, 'nothing cached, nothing fetched: named')
 	} finally {
+		for (let d of [dir, empty]) if (d) rmSync(d, { recursive: true, force: true })
 		REVISIONS.tiger = rev
 		if (cache == null) delete process.env.AUDIO_NEURAL_CACHE; else process.env.AUDIO_NEURAL_CACHE = cache
 	}
@@ -544,13 +545,14 @@ test('separate: a fetched compact file is checked against its SHA-256 before a s
 	let file = path.join(CACHE, 'scnet', models.scnet.file), have = existsSync(file), cache = process.env.AUDIO_NEURAL_CACHE
 	let server = http.createServer((req, res) => res.end(req.url.startsWith('/good/') && have ? readFileSync(file) : Buffer.from('not the file')))
 	await new Promise(r => server.listen(0, r))
-	process.env.AUDIO_NEURAL_CACHE = mkdtempSync(path.join(os.tmpdir(), 'neural-separate-'))
+	let dir = process.env.AUDIO_NEURAL_CACHE = mkdtempSync(path.join(os.tmpdir(), 'neural-separate-'))
 	try {
 		let url = `http://localhost:${server.address().port}/`, x = new Float32Array(4410)
 		await rejects(() => separate([x], { sampleRate: 44100, model: 'tiger', weights: url + 'bad/' }), /tiger\/tiger\.int8\.onnx has SHA-256 [0-9a-f]{64}, expected/)
 		if (have) is((await separate([x, x], { sampleRate: 44100, model: 'scnet', weights: url + 'good/' })).stems.vocals[0].length, x.length, 'the hosted file runs')
 	} finally {
 		if (cache == null) delete process.env.AUDIO_NEURAL_CACHE; else process.env.AUDIO_NEURAL_CACHE = cache
+		rmSync(dir, { recursive: true, force: true })
 		server.close()
 	}
 }, { timeout: 300_000 })
