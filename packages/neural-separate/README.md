@@ -26,8 +26,8 @@ In the browser `@audio/neural-runtime` runs `onnxruntime-web` instead (`device: 
 | `'umxhq'` | Open-Unmix: bi-LSTM on magnitude spectrograms, multichannel Wiener EM | 4 × 35.6 MB (fp16: 4 × 17.8 MB) | MIT | 6.75 · 6.11 · 5.00 · 3.36 | 0.19 (vocals only: 0.11) · 0.12 · 0.29 |
 | `'htdemucs'` | Hybrid Transformer Demucs: waveform and spectrogram U-Nets joined by a cross-domain transformer | 174 MB | research only | 8.86 · 9.55 · 9.30 · 5.69 | 1.4 (vocals only: 1.2) · 0.70 · 0.21 |
 | `'htdemucs_ft'` | four fine-tuned HTDemucs, one per source | 4 × 174 MB | research only | 8.67 · 9.45 · 9.68 · 5.58 | vocals only: 1.1 · not measured · not measured |
-| `'scnet-large'` | SCNet-large: band-split convolutions around dual-path LSTMs, on the complex spectrogram | 45 MB (export 169 MB) | MIT | 11.00 · 10.27 · 8.21 · 6.87 | 2.1 · not measured · not measured |
-| `'scnet'` | SCNet: the same at half the width | 13 MB (export 43 MB) | MIT | 9.88 · 9.43 · 8.35 · 6.15 | 0.70 · not measured · not measured |
+| `'scnet-large'` | SCNet-large: band-split convolutions around dual-path LSTMs, on the complex spectrogram | 45 MB (export 169 MB) | MIT | 11.00 · 10.27 · 8.21 · 6.87 | 2.1 · 7.8 · 5.0 |
+| `'scnet'` | SCNet: the same at half the width | 13 MB (export 43 MB) | MIT | 9.88 · 9.43 · 8.35 · 6.15 | 0.70 · 1.7 · 0.91 |
 
 SDR as measured below (Verification), identical to the Python originals'. The previews are 7 s excerpts, so these numbers sit apart from full-track results in scale, not in order: the Demucs README reports overall SDR 9.0 for fine-tuned HT Demucs against 5.3 for Open-Unmix on the MUSDB18-HQ test set.
 
@@ -35,10 +35,10 @@ SDR as measured below (Verification), identical to the Python originals'. The pr
 
 A soundtrack's stems, Divide and Remaster's three (the cocktail fork problem: Petermann, Wichern, Wang, Le Roux, ICASSP 2022):
 
-| `model` | Architecture | Files | Weights | Targets | Real-time factor, Node CPU |
+| `model` | Architecture | Files | Weights | Targets | Real-time factor: Node CPU · browser wasm · WebGPU |
 |---|---|---|---|---|---|
-| `'mrx'` | MRX: magnitudes at three STFT resolutions (Hann 1024, 2048, 8192, hop 256) into one hidden layer, a BLSTM per source, their mean, a real mask per source and resolution | 31 MB (export 122 MB) | MIT | `dialogue`, `music`, `effects` | 0.21 |
-| `'tiger'` | TIGER: three band-split models (57 bands, multi-scale convolutions and frame and frequency attention, 1.4 M parameters each), a complex mask each, one source kept from each | 7.3 MB (export 29 MB) | Apache 2.0 | `dialogue`, `music`, `effects` | 7.5–23 |
+| `'mrx'` | MRX: magnitudes at three STFT resolutions (Hann 1024, 2048, 8192, hop 256) into one hidden layer, a BLSTM per source, their mean, a real mask per source and resolution | 31 MB (export 122 MB) | MIT | `dialogue`, `music`, `effects` | 0.21 · 0.31 · 0.75 |
+| `'tiger'` | TIGER: three band-split models (57 bands, multi-scale convolutions and frame and frequency attention, 1.4 M parameters each), a complex mask each, one source kept from each | 7.3 MB (export 29 MB) | Apache 2.0 | `dialogue`, `music`, `effects` | 7.5–23 · 9.2 · 3.1 |
 
 Measured on Divide and Remaster v3's English test set (Watcharasupat, Wu, Orife, 2024; CC BY-SA 4.0, built from sources that allow commercial use), 150 of its 1200 clips of 60 s, every 8th ([`audio`](https://github.com/audiojs/audio)'s `bench/rx/scene.mjs`): each stem against its reference over the whole clip, SNR the median over clips (the measure Bandit v2's paper reports on this set) and SI-SDR the mean (MRX's on v2); remixes, a stem 6 dB up or down as the input plus (g − 1) times it, against the true remix, SNR, the median.
 
@@ -52,6 +52,14 @@ Measured on Divide and Remaster v3's English test set (Watcharasupat, Wu, Orife,
 | `tiger` | 12.68 · 12.35 | 10.24 · 8.06 | 8.06 · 7.50 | 20.98 | 21.46 | 21.15 |
 
 TIGER, at about 50 times MRX's time (RTF 10.6 against 0.21 here), is ahead on 29, 28 and 29 of the 30 clips (dialogue, music, effects), by a median 2.3, 3.7 and 3.4 dB. MRX's own README reports 12.5 · 4.2 · 5.7 dB SI-SDR on DnR v2, the set it trained on, whose music holds singing; v3's music holds none, and its loudness and languages differ (v3's paper). DnR v2's test split comes only inside a 116 GB gzip of the whole set; v3's clips are fetched one by one. The real-time factors are of one run on a 14-core M4 Max shared with other jobs (load averages 25 to 60), so upper bounds: `mrx` a 60 s clip in 13 s; `tiger` three models of 15,000 small operators each, every sample in three 12 s segments.
+
+The browser's, the shipped files (Size, below) on 30 s (a song; a Divide and Remaster clip), model load included:
+onnxruntime-web 1.30 in headless Chromium 153, wasm on its default 4 threads, WebGPU on Metal, one run each on a
+14-core M4 Max under load averages of 110 to 300 from other jobs, so upper bounds. Peak memory, the browser's processes
+together (0.9 GB of it the browser idle): wasm `scnet` 3.0 GB, `scnet-large` 4.6, `mrx` 3.0, `tiger` 3.5; WebGPU 2.1,
+2.4, 3.4, 1.5. On WebGPU `tiger`'s session takes 13 s to make (38,817 nodes), a 60 s clip about 3 minutes, MRX's 45 s;
+on wasm 9 and 0.3 minutes. Float16 compute does not pay: `tiger`'s on WebGPU is 13 % faster and its music 4.7 dB from
+the float32 graph's.
 
 `targets` picks a subset: `targets: ['vocals']` runs only the vocals graph of `umxhq` (against the residual, see Algorithm: 2.4× faster, vocals SDR 6.50 instead of 6.75) and of `htdemucs_ft`, and skips the other sources' iSTFT for `htdemucs`. Presets resample to their 44.1 kHz and back.
 
