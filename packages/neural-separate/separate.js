@@ -17,6 +17,10 @@
 //   contract) with their STFT and iSTFT out of the graph: each channel's STFT in, re and im as
 //   channels, each source's out. 11 s segments overlap-added under linear fades, as
 //   ZFTurbo/Music-Source-Separation-Training's demix() runs them.
+// 'multires': masking models over several STFT resolutions (MRX: Petermann, Wichern, Wang, Le Roux, "The Cocktail
+//   Fork Problem: Three-Stem Audio Separation for Real-World Soundtracks", ICASSP 2022), their STFTs and iSTFTs out of
+//   the graph: each channel's magnitudes in, a real mask per source and resolution out; a source is the sum of the
+//   iSTFTs of its masked spectrograms. The input at the loudness the model trained at, as upstream's separate.py sets it.
 // 'waveform': any [1, C, N] → [1, S, C, N] graph.
 //
 // Long inputs run in overlapping chunks, so memory stays bounded by the chunk, not the file.
@@ -350,6 +354,23 @@ const DEMUCS = ['drums', 'bass', 'other', 'vocals']
 // SCNet's STFT (torch.stft's window=None: ones; normalized) and segment, 476 frames of 11 s
 const SCNET = { modelType: 'complex', sampleRate: 44100, targets: DEMUCS, n: 4096, hop: 1024, window: 'ones', normalized: true, segment: 485100, frames: 476 }
 
+// MRX's STFTs (mrx.py _stft: Hann, hop 256, centered, normalized) at three resolutions; its sources in its order
+// (music, speech, sfx), named as a soundtrack's stems are; channels encoded apart, so mono stays mono; the input at
+// -27 LUFS (separate.py's input_lufs, the stems scaled back); 20 s chunks (Node's peak 1.9 GB on 60 s, whole 4.4 GB)
+const MRX = {
+	modelType: 'multires', sampleRate: 44100, targets: ['dialogue', 'music', 'effects'], sources: ['music', 'dialogue', 'effects'],
+	windows: [1024, 2048, 8192], hop: 256, loudness: -27, mono: true, chunk: 20, script: 'export-mrx.py',
+}
+
+// TIGER's DnR model as scripts/export-tiger.py exports it (three band-split models, each its kept source, one graph): its
+// STFT (Hann, unnormalized, centered), 12 s segments of 1034 frames every 4 s, as TIGERDNR.wav_chunk_inference cuts
+// them; mono, channels apart
+const TIGER = {
+	modelType: 'complex', sampleRate: 44100, targets: ['dialogue', 'music', 'effects'], sources: ['dialogue', 'music', 'effects'],
+	n: 2048, hop: 512, window: 'hann', normalized: false, segment: 529200, frames: 1034, step: 1 / 3, fade: 0, pad: 'zero',
+	standardize: false, mono: true, script: 'export-tiger.py',
+}
+
 // Presets: files are <weights>/<name>/<target>.onnx (one graph per target) or
 // <weights>/<name>/<name>.onnx, as scripts/export-*.py write them.
 export const models = {
@@ -359,6 +380,11 @@ export const models = {
 	// SCNet-large and SCNet (starrytong/SCNet, MIT weights) as scripts/export-scnet.py exports them
 	'scnet-large': SCNET,
 	scnet: SCNET,
+	// MRX (merlresearch/cocktail-fork-separation, MIT weights) as scripts/export-mrx.py exports it: dialogue, music
+	// and effects of a soundtrack (Divide and Remaster)
+	mrx: MRX,
+	// TIGER (JusperLee/TIGER, Apache-2.0 weights): the same three stems, three band-split models, 30 to 100 times MRX's time
+	tiger: TIGER,
 }
 
 async function cacheDir() {
@@ -387,7 +413,7 @@ async function checkLocal(graphs, name) {
 	let [{ existsSync }, { fileURLToPath }] = await Promise.all([import('node:fs'), import('node:url')])
 	let missing = files.map(f => fileURLToPath(f)).filter(f => !existsSync(f))
 	if (!missing.length) return
-	let script = { hybrid: 'export-htdemucs.py', complex: 'export-scnet.py' }[models[name].modelType] ?? 'export-openunmix.py'
+	let script = models[name].script ?? { hybrid: 'export-htdemucs.py', complex: 'export-scnet.py' }[models[name].modelType] ?? 'export-openunmix.py'
 	throw new Error(`neural-separate: ${name} weights not found: ${missing.join(', ')}. ` +
 		`Produce them with python3 node_modules/@audio/neural-separate/scripts/${script} --model ${name}, ` +
 		`or pass opts.weights: a URL or directory holding ${name}/<file>.onnx`)
@@ -406,7 +432,7 @@ async function resolveModel(opts) {
 		let p = models[model], base = await weightsBase(opts, model)
 		if (want) for (let t of want) if (!p.targets.includes(t)) throw new Error(`neural-separate: ${model} has no target '${t}' (has ${p.targets.join(', ')})`)
 		let targets = pick(p.targets)
-		let sources = p.modelType === 'hybrid' || p.modelType === 'complex' ? DEMUCS : null
+		let sources = p.sources ?? (p.modelType === 'hybrid' || p.modelType === 'complex' ? DEMUCS : null)
 		let graphs = p.perTarget
 			? targets.map(t => ({ spec: `${base}${model}/${t}.onnx`, sources: sources ?? [t], keep: [t] }))
 			: [{ spec: `${base}${model}/${model}.onnx`, sources: sources ?? p.targets, keep: targets }]
@@ -647,13 +673,13 @@ async function separateHybrid(channels, rate, opts, graphs, load) {
 
 // One segment through a complex-spectrogram graph, [1, 2C, F, T] in (channel c's STFT at 2c, re, and 2c + 1, im),
 // [1, 2·S·C, F, T] out (source s, channel c at 2(sC + c), re, and the next, im): the segment zero-padded to
-// (T − 1)·hop samples (SCNet.forward pads so), centered reflect-padded frames, × `scale` (normalized: 1/√n) and
-// back. seg: C channels of L samples; returns the sources at indices `want`, C channels of L samples each.
+// (T − 1)·hop samples when shorter (SCNet.forward pads so), centered reflect-padded frames, × `scale` (normalized:
+// 1/√n) and back. seg: C channels of L samples; returns the sources at indices `want`, C channels of L samples each.
 async function complexSegment(session, seg, want, n, hop, win, scale, T) {
 	let C = seg.length, L = seg[0].length, F = (n >> 1) + 1, spec = new Float32Array(2 * C * F * T)
 	seg.forEach((x, c) => {
-		let padded = new Float64Array((T - 1) * hop)
-		padded.set(x.subarray(0, padded.length))
+		let padded = new Float64Array(Math.max(L, (T - 1) * hop))
+		padded.set(x)
 		let { re, im } = stftFlat(padded, n, hop, win, true)
 		let zr = spec.subarray(2 * c * F * T), zi = spec.subarray((2 * c + 1) * F * T)
 		for (let f = 0, k = 0; f < F; f++) for (let t = 0, i = f; t < T; t++, i += F, k++) { zr[k] = re[i] * scale; zi[k] = im[i] * scale }
@@ -681,28 +707,35 @@ async function complexSegment(session, seg, want, n, hop, win, scale, T) {
 // starts before it: a 7 s song took three 11 s segments, now one, its SDR within 0.02 dB), and the first and last
 // fades are set per segment (demix sets them per batch of 8: its first segment fades in, every one of a last
 // batch holds).
+// TIGER's DnR model (its preset's `step` 1/3, `fade` 0, `pad` 'zero', `standardize` false, `mono`) runs the segments
+// TIGERDNR.wav_chunk_inference cuts: 12 s every 4 s, unweighted, the input zero-padded by 8 s at each end and the last
+// segments with zeros, each channel apart, nothing normalized; its sum divided by the three segments over every
+// sample, as the summed weights divide it here.
 async function separateComplex(channels, rate, opts, graphs, load, p) {
 	let n = opts.n ?? p?.n ?? 4096, hop = opts.hop ?? p?.hop ?? 1024
 	let win = (opts.window ?? p?.window) === 'ones' ? new Float64Array(n).fill(1) : hann(n), scale = (opts.normalized ?? p?.normalized ?? true) ? 1 / Math.sqrt(n) : 1
-	let C = channels.length, N = channels[0].length, { norm, scale: back } = normalize(channels)
+	let C = channels.length, N = channels[0].length, zero = (opts.pad ?? p?.pad) === 'zero'
+	let { norm, scale: back } = opts.standardize ?? p?.standardize ?? true ? normalize(channels) : { norm: channels, scale: c => c }
 	let result = {}
 	for (let g of graphs) {
 		let session = await load(g.spec)
 		try {
 			let T = session.inputs?.[0]?.dims?.[3]
 			T = typeof T === 'number' && T > 0 ? T : opts.frames ?? p?.frames
-			let L = opts.segment ?? p?.segment ?? (T - 1) * hop, step = Math.max(1, Math.floor(L * (opts.step ?? 0.25)))
-			let border = L - step, wide = N > 2 * border && border > 0
-			let x = wide ? norm.map(c => Float32Array.from({ length: N + 2 * border }, (_, i) => c[reflectIndex(i - border, N)])) : norm
-			let M = x[0].length, fade = Math.floor(L / 10), starts = []
+			let L = opts.segment ?? p?.segment ?? (T - 1) * hop, step = Math.max(1, Math.floor(L * (opts.step ?? p?.step ?? 0.25)))
+			let border = L - step, wide = border > 0 && (zero || N > 2 * border)
+			let x = wide ? norm.map(c => Float32Array.from({ length: N + 2 * border }, (_, i) => zero ? (i < border || i >= border + N ? 0 : c[i - border]) : c[reflectIndex(i - border, N)])) : norm
+			let M = x[0].length, fade = Math.floor(L * (opts.fade ?? p?.fade ?? 0.1)), starts = []
 			for (let s = 0; ; s += step) { starts.push(s); if (s + L >= M) break }
 			let keep = g.keep.map(name => g.sources.indexOf(name))
 			let acc = g.keep.map(() => Array.from({ length: C }, () => new Float64Array(M))), wsum = new Float64Array(M)
 			for (let k = 0; k < starts.length; k++) {
-				let start = starts[k], len = Math.min(L, M - start), reflect = len > L / 2
+				let start = starts[k], len = Math.min(L, M - start), reflect = !zero && len > L / 2
 				opts.progress?.({ chunk: k + 1, totalChunks: starts.length })
 				let seg = x.map(c => { let s = new Float32Array(L); for (let i = 0; i < L; i++) s[i] = i < len ? c[start + i] : reflect ? c[start + reflectIndex(i, len)] : 0; return s })
-				let stems = await complexSegment(session, seg, keep, n, hop, win, scale, T)
+				// a mono model hears each channel apart
+				let stems = p?.mono ? [] : await complexSegment(session, seg, keep, n, hop, win, scale, T)
+				if (p?.mono) for (let c = 0; c < C; c++) (await complexSegment(session, [seg[c]], keep, n, hop, win, scale, T)).forEach((st, j) => (stems[j] ??= [])[c] = st[0])
 				for (let i = 0; i < len; i++) {
 					let w = 1
 					if (k > 0 && i < fade) w = i / (fade - 1)
@@ -719,6 +752,91 @@ async function separateComplex(channels, rate, opts, graphs, load, p) {
 		}
 	}
 	return result
+}
+
+// ------------------------------------------------------------------ multires
+
+// Each channel apart (B = 1), chunk by chunk: its STFT at every resolution (Hann windows of `windows` samples, one
+// hop, centered), the magnitudes scaled 1/√n (torch.stft's normalized=True) in as mag_<n> [1, F, T], masks out as
+// mask_<n> [1, S, F, T] in the graph's source order; a source is the sum over resolutions of the iSTFT of its mask
+// times the spectrogram (the masks are real: the 1/√n and the iSTFT's √n cancel).
+async function separateMultires(channels, rate, opts, graphs, load, p) {
+	let windows = opts.windows ?? p?.windows, hop = opts.hop ?? p?.hop ?? 256
+	let C = channels.length, N = channels[0].length, result = {}
+	for (let g of graphs) {
+		let session = await load(g.spec)
+		try {
+			let { starts, size, weight } = crossfadeChunks(N, rate, { ...opts, chunk: opts.chunk ?? p?.chunk })
+			Object.assign(result, await overlapAdd(N, C, starts, size, weight, async (start, len) => {
+				let res = Object.fromEntries(g.keep.map(name => [name, []]))
+				for (let c = 0; c < C; c++) {
+					let x = channels[c].subarray(start, start + len), feeds = {}
+					// the spectra kept in float32 (the 8192 window's alone 113 MB a 20 s chunk), one masked copy reused
+					let specs = windows.map((n, r) => {
+						let { re, im, T, bins: F } = stftFlat(x, n, hop, hann(n), true), mag = new Float32Array(F * T), k = 1 / Math.sqrt(n)
+						for (let t = 0, i = 0; t < T; t++) for (let f = 0; f < F; f++, i++) mag[f * T + t] = Math.hypot(re[i], im[i]) * k
+						feeds[session.inputs?.[r]?.name ?? `mag_${n}`] = tensor(mag, [1, F, T], 'float32')
+						return { re: Float32Array.from(re), im: Float32Array.from(im), T, F }
+					})
+					let out = await session.run(feeds), acc = g.keep.map(() => new Float64Array(len))
+					specs.forEach(({ re, im, T, F }, r) => {
+						let n = windows[r], m = outputOf(session, out, r).data, mr = new Float64Array(T * F), mi = new Float64Array(T * F)
+						g.keep.forEach((name, j) => {
+							let b = g.sources.indexOf(name) * F * T
+							for (let f = 0; f < F; f++) for (let t = 0, i = f, q = b + f * T; t < T; t++, i += F, q++) { mr[i] = re[i] * m[q]; mi[i] = im[i] * m[q] }
+							let o = new Float64Array((T - 1) * hop + n)
+							ola(rows(mr, F), rows(mi, F), o, 0, n, hop, hann(n))
+							let y = olaFinish(o, envelope(T, n, hop, hann(n)), n, true, len)
+							for (let i = 0; i < len; i++) acc[j][i] += y[i]
+						})
+					})
+					g.keep.forEach((name, j) => res[name].push(acc[j]))
+				}
+				return res
+			}, opts.progress))
+		} finally {
+			session.free?.()
+		}
+	}
+	return result
+}
+
+// ------------------------------------------------------------------ loudness
+
+// Integrated loudness, ITU-R BS.1770-4, as pyloudnorm 0.2 measures it (upstream MRX's separate.py sets its input with
+// it): K-weighting by pyloudnorm's two biquads at any rate (a 4 dB shelf over 1.5 kHz, a 38 Hz high-pass), 400 ms
+// blocks every 100 ms, gated at -70 LUFS, then 10 LU under the mean of the rest; -Infinity for silence.
+function lufs(channels, rate) {
+	let shelf = (G, Q, fc) => {
+		let A = 10 ** (G / 40), w = 2 * Math.PI * fc / rate, al = Math.sin(w) / (2 * Q), c = Math.cos(w), r = 2 * Math.sqrt(A) * al
+		return [A * ((A + 1) + (A - 1) * c + r), -2 * A * ((A - 1) + (A + 1) * c), A * ((A + 1) + (A - 1) * c - r), (A + 1) - (A - 1) * c + r, 2 * ((A - 1) - (A + 1) * c), (A + 1) - (A - 1) * c - r]
+	}
+	let pass = (Q, fc) => { let w = 2 * Math.PI * fc / rate, al = Math.sin(w) / (2 * Q), c = Math.cos(w); return [(1 + c) / 2, -(1 + c), (1 + c) / 2, 1 + al, -2 * c, 1 - al] }
+	let filters = [shelf(4, 1 / Math.sqrt(2), 1500), pass(0.5, 38)], N = channels[0].length, T = 0.4, step = 0.25
+	// numpy's round, half to even, as pyloudnorm counts its blocks
+	let even = v => { let f = Math.floor(v), d = v - f; return d > 0.5 || (d === 0.5 && f % 2) ? f + 1 : f }
+	let blocks = even((N / rate - T) / (T * step)) + 1
+	if (!(blocks > 0)) return -Infinity
+	let z = new Float64Array(blocks), G = [1, 1, 1, 1.41, 1.41]
+	channels.forEach((x, c) => {
+		let y = Float64Array.from(x)
+		for (let [b0, b1, b2, a0, a1, a2] of filters) {
+			// scipy.signal.lfilter from rest: direct form II transposed, coefficients over a0
+			b0 /= a0; b1 /= a0; b2 /= a0; a1 /= a0; a2 /= a0
+			let z1 = 0, z2 = 0
+			for (let i = 0; i < N; i++) { let v = y[i], o = b0 * v + z1; z1 = b1 * v - a1 * o + z2; z2 = b2 * v - a2 * o; y[i] = o }
+		}
+		for (let j = 0; j < blocks; j++) {
+			let lo = Math.trunc(T * (j * step) * rate), hi = Math.min(N, Math.trunc(T * (j * step + 1) * rate)), s = 0
+			for (let i = lo; i < hi; i++) s += y[i] * y[i]
+			z[j] += (G[c] ?? 1) * s / (T * rate)
+		}
+	})
+	let L = v => -0.691 + 10 * Math.log10(v), mean = v => v.reduce((a, b) => a + b, 0) / v.length
+	let abs = [...z].filter(v => L(v) >= -70)
+	if (!abs.length) return -Infinity
+	let rel = L(mean(abs)) - 10, gated = [...z].filter(v => L(v) > rel && L(v) > -70)
+	return gated.length ? L(mean(gated)) : -Infinity
 }
 
 // ------------------------------------------------------------------ waveform
@@ -756,8 +874,6 @@ function normalizeAudio(audio, opts) {
 	else throw new Error('neural-separate: audio must be Float32Array[] or { channelData, sampleRate }')
 	if (!sampleRate) throw new Error('neural-separate: sampleRate is required (opts.sampleRate, or audio.sampleRate)')
 	if (!channelData.length) throw new Error('neural-separate: audio has no channels')
-	// mono → duplicated stereo, as openunmix.utils.preprocess does
-	if (channelData.length === 1) channelData = [channelData[0], channelData[0]]
 	return { channelData, sampleRate }
 }
 
@@ -776,20 +892,29 @@ export default async function separate(audio, opts = {}) {
 
 	let { channelData, sampleRate: rate } = normalizeAudio(audio, opts)
 	let { graphs, modelType, sampleRate: modelRate, targets, preset } = await resolveModel(opts)
+	// mono → duplicated stereo, as openunmix.utils.preprocess does; a model hearing channels apart takes it as it is
+	if (channelData.length === 1 && !preset?.mono) channelData = [channelData[0], channelData[0]]
 	let empty = () => channelData.map(() => new Float32Array(0))
 	if (!channelData[0].length) return { stems: Object.fromEntries(targets.map(t => [t, empty()])), sampleRate: rate, residual: empty() }
 	let targetRate = opts.targetRate ?? modelRate ?? rate
 	let proc = targetRate !== rate ? channelData.map(c => resampleSinc(c, { from: rate, to: targetRate })) : channelData
 	let load = loader(opts)
+	// the input at the loudness the model trained at, its stems scaled back (a silent input as it is)
+	let level = preset?.loudness == null ? -Infinity : lufs(proc, targetRate), gain = Number.isFinite(level) ? 10 ** ((preset.loudness - level) / 20) : 1
+	if (gain !== 1) proc = proc.map(c => c.map(v => v * gain))
 
 	let stemsAtRate = modelType === 'hybrid' ? await separateHybrid(proc, targetRate, opts, graphs, load)
 		: modelType === 'complex' ? await separateComplex(proc, targetRate, opts, graphs, load, preset)
+		: modelType === 'multires' ? await separateMultires(proc, targetRate, opts, graphs, load, preset)
 		: modelType === 'waveform' ? await separateWaveform(proc, targetRate, opts, graphs, load)
 		: await separateSpectral(proc, targetRate, opts, graphs, modelType, load)
 
 	let N = channelData[0].length
 	let stems = {}
-	for (let name of targets) stems[name] = stemsAtRate[name].map(c => fitLength(targetRate !== rate ? resampleSinc(c, { from: targetRate, to: rate }) : c, N))
+	for (let name of targets) stems[name] = stemsAtRate[name].map(c => {
+		if (gain !== 1) c = Float32Array.from(c, v => v / gain)
+		return fitLength(targetRate !== rate ? resampleSinc(c, { from: targetRate, to: rate }) : c, N)
+	})
 
 	let residual = channelData.map((c, ci) => {
 		let r = Float32Array.from(c)

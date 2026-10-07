@@ -401,6 +401,33 @@ test('models: presets name their contract', () => {
 	is(models['scnet-large'].modelType, 'complex')
 	is(models['scnet-large'].targets, ['drums', 'bass', 'other', 'vocals'])
 	is(models.scnet.modelType, 'complex')
+	is(models.mrx.modelType, 'multires')
+	is(models.mrx.targets, ['dialogue', 'music', 'effects'])
+})
+
+// 'multires' (MRX's contract): a source is the sum over resolutions of the iSTFT of its mask times the spectrogram, so
+// masks of 1/3 at all three give the input back; channels apart, mono kept mono; the input taken to -27 LUFS and its
+// stems scaled back by the same gain
+test('separate: multires sums its resolutions\' masked iSTFTs; mono stays mono; the loudness gain undone', async () => {
+	let fs = 44100, N = fs * 3, rand = seededRand(5), seen = []
+	let x = Float32Array.from({ length: N }, (_, i) => 0.02 * Math.sin(2 * Math.PI * 330 * i / fs) + 0.01 * (rand() * 2 - 1))
+	let session = async () => ({
+		inputs: [1024, 2048, 8192].map(n => ({ name: `mag_${n}` })), outputs: [1024, 2048, 8192].map(n => ({ name: `mask_${n}` })),
+		async run(feeds) {
+			seen.push(Object.values(feeds).map(t => t.dims.join('x')).join(' '))
+			return Object.fromEntries(Object.entries(feeds).map(([k, t]) => {
+				let [B, F, T] = t.dims, m = new Float32Array(B * 3 * F * T)
+				m.fill(1 / 3, 0, F * T)  // the first source (MRX's music) whole, the others nothing
+				return [k.replace('mag', 'mask'), { data: m, dims: [B, 3, F, T] }]
+			}))
+		},
+		free() {},
+	})
+	let { stems } = await separate([x], { sampleRate: fs, model: 'mrx', weights: 'https://example.invalid/', session })
+	is(stems.music.length, 1, 'mono in, mono out')
+	ok(snr(stems.music[0], x) > 100, `music: the input, ${snr(stems.music[0], x).toFixed(1)} dB`)
+	ok(stems.dialogue[0].every(v => v === 0) && stems.effects[0].every(v => v === 0), 'masked out: nothing')
+	is(seen[0], `1x513x${1 + Math.floor(N / 256)} 1x1025x${1 + Math.floor(N / 256)} 1x4097x${1 + Math.floor(N / 256)}`, 'one channel a run, hop 256, three windows')
 })
 
 test('separate: preset without its weights: names the missing file and the export script', async () => {
@@ -409,6 +436,7 @@ test('separate: preset without its weights: names the missing file and the expor
 	await rejects(() => separate([x, x], { sampleRate: 44100, model: 'umxhq', targets: ['vocals'], weights: empty }), /umxhq weights not found: .*umxhq\/vocals\.onnx.*export-openunmix\.py/, 'umxhq')
 	await rejects(() => separate([x, x], { sampleRate: 44100, model: 'htdemucs', weights: empty }), /htdemucs weights not found: .*htdemucs\/htdemucs\.onnx.*export-htdemucs\.py/, 'htdemucs')
 	await rejects(() => separate([x, x], { sampleRate: 44100, model: 'scnet-large', weights: empty }), /scnet-large weights not found: .*scnet-large\/scnet-large\.onnx.*export-scnet\.py/, 'scnet-large')
+	await rejects(() => separate([x, x], { sampleRate: 44100, model: 'mrx', weights: empty }), /mrx weights not found: .*mrx\/mrx\.onnx.*export-mrx\.py/, 'mrx')
 	await rejects(() => separate([x, x], { sampleRate: 44100, model: 'umxhq', targets: ['piano'], weights: empty }), /umxhq has no target 'piano'/, 'unknown target')
 })
 
@@ -433,7 +461,11 @@ function reference(name) {
 // (export-htdemucs.py --verify).
 // scnet-large, scnet: SCNet.forward on the segments scripts/reference.py's chunked() cuts (separate.js's), 20 s,
 // matched to 114-134 dB (export-scnet.py reduces its GroupNorm statistics axis by axis: as exported, 52-55 dB)
-for (let [name, minDb] of [['umxhq', 100], ['htdemucs', 70], ['htdemucs_ft', 70], ['scnet-large', 100], ['scnet', 100]]) {
+// mrx: upstream's separate_soundtrack (pyloudnorm's -27 LUFS in and out, MRX.forward over the whole 20 s), matched to
+// 101-134 dB: one chunk (20 s); in 8 s chunks, 12-50 dB (its LSTMs hear the whole input)
+// tiger: upstream's TIGERDNR.wav_chunk_inference, each channel apart, its segments through the graph export-tiger.py
+// verified against the three TIGER.forward (4e-7), matched to 95-140 dB
+for (let [name, minDb] of [['umxhq', 100], ['htdemucs', 70], ['htdemucs_ft', 70], ['scnet-large', 100], ['scnet', 100], ['mrx', 100], ['tiger', 90]]) {
 	let ref = reference(name)
 	;(ref ? test : test.skip)(`separate: ${name} matches the Python reference on scripts/reference.py's mix: SNR > ${minDb} dB per stem`, async () => {
 		let { stems } = await separate(ref.mix, { sampleRate: 44100, model: name })
@@ -441,7 +473,7 @@ for (let [name, minDb] of [['umxhq', 100], ['htdemucs', 70], ['htdemucs_ft', 70]
 			let db = snr(stems[t][c], ref.stems[t][c])
 			ok(db > minDb, `${t} ch${c}: ${db.toFixed(1)} dB`)
 		}
-	}, { timeout: 600_000 }) // htdemucs_ft: four graphs, two segments each, on a CPU
+	}, { timeout: 1_800_000 }) // htdemucs_ft: four graphs, two segments each; tiger: three models, seven 12 s segments a channel
 }
 
 // ------------------------------------------------------------------- Speed

@@ -1,18 +1,18 @@
 /**
  * Source separation (stems) through @audio/neural-runtime's ONNX adapter: Open-Unmix-class
  * spectrogram models (Stöter, Uhlich, Liutkus, Mitsufuji, JOSS 2019), Hybrid Transformer Demucs
- * (Rouard, Massa, Défossez, ICASSP 2023) and SCNet (Tong et al., ICASSP 2024) with STFT and iSTFT
- * outside the graph, and waveform graphs.
+ * (Rouard, Massa, Défossez, ICASSP 2023), SCNet (Tong et al., ICASSP 2024) and MRX (Petermann et al., ICASSP 2022)
+ * with STFT and iSTFT outside the graph, and waveform graphs.
  */
 
-/** Mono duplicates internally; multichannel arrays must share the same length. */
+/** Mono duplicates internally (a model hearing channels apart, mrx and tiger, keeps it mono); multichannel arrays must share the same length. */
 export type AudioInput = Float32Array[] | { channelData: Float32Array[]; sampleRate: number }
 
 /** A model spec resolvable by @audio/neural-runtime's load(): URL string or raw ONNX bytes. */
 export type ModelSpec = string | Uint8Array
 
 /** Presets whose files the export scripts write: <weights>/<name>/<target>.onnx or <weights>/<name>/<name>.onnx */
-export type ModelName = 'umxhq' | 'htdemucs' | 'htdemucs_ft' | 'scnet-large' | 'scnet'
+export type ModelName = 'umxhq' | 'htdemucs' | 'htdemucs_ft' | 'scnet-large' | 'scnet' | 'mrx' | 'tiger'
 
 /** One graph whose output stacks several sources on its S axis */
 export type MultiGraph = { url: ModelSpec; targets: string[] }
@@ -28,6 +28,7 @@ export type ModelType =
 	| 'mask' // target model outputs a [0,1] mask; multiplied by the mixture magnitude
 	| 'hybrid' // demucs.onnx contract: mix [1,C,L] + CaC spectrogram [1,2C,F,T] in; [1,S,2C,F,T] + [1,S,C,L] out
 	| 'complex' // SCNet-class: CaC spectrogram [1,2C,F,T] in; [1,2SC,F,T] out (source, channel, re/im)
+	| 'multires' // MRX-class: one channel's magnitudes mag_<n> [1,F,T] at each window n in; real masks mask_<n> [1,S,F,T] out
 	| 'waveform' // Demucs v2-class: [1,C,N] waveform in, [1,S,C,N] stacked waveforms out
 
 export interface ModelPreset {
@@ -44,6 +45,23 @@ export interface ModelPreset {
 	normalized?: boolean
 	segment?: number
 	frames?: number
+	/** the graph's source order, when not the targets' (or Demucs's for 'hybrid' and 'complex') */
+	sources?: string[]
+	/** 'multires': its windows, one hop */
+	windows?: number[]
+	/** integrated loudness (LUFS) the input is set to, its stems scaled back */
+	loudness?: number
+	/** channels heard apart: mono is not duplicated */
+	mono?: boolean
+	/** 'complex': segments' step and fade (fractions of a segment), their padding past the ends, the input normalized or not */
+	step?: number
+	fade?: number
+	pad?: 'reflect' | 'zero'
+	standardize?: boolean
+	/** chunk length (s) when not 30 */
+	chunk?: number
+	/** the export script that writes its weights */
+	script?: string
 }
 
 /** Model presets by name */
@@ -80,13 +98,19 @@ export interface SeparateOptions {
 	segment?: number
 	/** 'complex': segments start every `step` of a segment (default 0.25: each sample in four, as Music-Source-Separation-Training's num_overlap 4) */
 	step?: number
+	/** 'complex': each segment's linear fade in and out, a fraction of it (default 0.1, demix's; tiger 0) */
+	fade?: number
+	/** 'complex': past the input's ends, reflected (default) or zeros (tiger) */
+	pad?: 'reflect' | 'zero'
+	/** 'complex': the input normalized by its mean and deviation (default true; tiger false) */
+	standardize?: boolean
 	/** 'complex': frames per segment when the graph does not declare them (inputs[0].dims[3]) */
 	frames?: number
 	/** 'complex': the STFT window, 'ones' (torch.stft's window=None, SCNet's) or 'hann' (default: the preset's, else 'hann') */
 	window?: 'ones' | 'hann'
 	/** 'complex': the STFT scaled by 1/√n and back, torch.stft's normalized=True (default: the preset's, else true) */
 	normalized?: boolean
-	/** 'openunmix' | 'mask' | 'waveform': chunk length in seconds (default 30) */
+	/** 'openunmix' | 'mask' | 'waveform' | 'multires': chunk length in seconds (default 30; mrx 20) */
 	chunk?: number
 	/** crossfade overlap in seconds between chunks (default 2); must be < chunk */
 	overlap?: number
