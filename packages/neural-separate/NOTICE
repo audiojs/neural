@@ -14,6 +14,12 @@ htdemucs.py's spectrogram framing, into separate.js. Under the MIT License:
 
     Copyright (c) Meta Platforms, Inc. and affiliates.
 
+This product includes a JavaScript translation of parts of Music-Source-Separation-Training
+(https://github.com/ZFTurbo/Music-Source-Separation-Training): utils/model_utils.py's demix(),
+its segments, fades and reflection, into separate.js. Under the MIT License:
+
+    Copyright (c) 2024 Roman Solovyev (ZFTurbo)
+
 The MIT License, for each notice above:
 
     Permission is hereby granted, free of charge, to any person obtaining a copy of this
@@ -33,4 +39,6 @@ The MIT License, for each notice above:
     DEALINGS IN THE SOFTWARE.
 
 No model weights are included. The export scripts write them to the local cache; their terms are
-their authors' (Open-Unmix umxhq: MIT; Demucs htdemucs weights: see the README).
+their authors' (Open-Unmix umxhq: MIT; SCNet and SCNet-large: MIT, Copyright (c) 2024 starrytong,
+redistributable converted with attribution, github.com/starrytong/SCNet/issues/35; Demucs htdemucs
+weights: see the README).

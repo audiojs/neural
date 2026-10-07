@@ -1,7 +1,8 @@
 /**
  * Source separation (stems) through @audio/neural-runtime's ONNX adapter: Open-Unmix-class
  * spectrogram models (Stöter, Uhlich, Liutkus, Mitsufuji, JOSS 2019), Hybrid Transformer Demucs
- * (Rouard, Massa, Défossez, ICASSP 2023) with STFT and iSTFT outside the graph, and waveform graphs.
+ * (Rouard, Massa, Défossez, ICASSP 2023) and SCNet (Tong et al., ICASSP 2024) with STFT and iSTFT
+ * outside the graph, and waveform graphs.
  */
 
 /** Mono duplicates internally; multichannel arrays must share the same length. */
@@ -11,7 +12,7 @@ export type AudioInput = Float32Array[] | { channelData: Float32Array[]; sampleR
 export type ModelSpec = string | Uint8Array
 
 /** Presets whose files the export scripts write: <weights>/<name>/<target>.onnx or <weights>/<name>/<name>.onnx */
-export type ModelName = 'umxhq' | 'htdemucs' | 'htdemucs_ft'
+export type ModelName = 'umxhq' | 'htdemucs' | 'htdemucs_ft' | 'scnet-large' | 'scnet'
 
 /** One graph whose output stacks several sources on its S axis */
 export type MultiGraph = { url: ModelSpec; targets: string[] }
@@ -26,6 +27,7 @@ export type ModelType =
 	| 'openunmix' // target model outputs the estimated magnitude directly
 	| 'mask' // target model outputs a [0,1] mask; multiplied by the mixture magnitude
 	| 'hybrid' // demucs.onnx contract: mix [1,C,L] + CaC spectrogram [1,2C,F,T] in; [1,S,2C,F,T] + [1,S,C,L] out
+	| 'complex' // SCNet-class: CaC spectrogram [1,2C,F,T] in; [1,2SC,F,T] out (source, channel, re/im)
 	| 'waveform' // Demucs v2-class: [1,C,N] waveform in, [1,S,C,N] stacked waveforms out
 
 export interface ModelPreset {
@@ -35,6 +37,13 @@ export interface ModelPreset {
 	targets: string[]
 	/** one graph per target (<target>.onnx), else one graph for all (<name>.onnx) */
 	perTarget?: boolean
+	/** 'complex': the model's STFT (size, hop, window, normalized) and segment (samples, frames) */
+	n?: number
+	hop?: number
+	window?: 'ones' | 'hann'
+	normalized?: boolean
+	segment?: number
+	frames?: number
 }
 
 /** Model presets by name */
@@ -43,7 +52,7 @@ export const models: Record<ModelName, ModelPreset>
 /** A neural-runtime-shaped session — enough of it to drive separate() with a test double. */
 export interface Session {
 	run(feeds: Record<string, { data: Float32Array; dims: number[]; type: string }>): Promise<Record<string, { data: Float32Array; dims: number[] }>>
-	/** 'hybrid' reads its segment length off inputs[0].dims[2] when declared */
+	/** 'hybrid' reads its segment length off inputs[0].dims[2] when declared, 'complex' its frames off inputs[0].dims[3] */
 	inputs?: { name: string; dims?: number[] }[]
 	outputs?: { name: string }[]
 	free?(): void
@@ -67,8 +76,16 @@ export interface SeparateOptions {
 	eps?: number
 	/** frames per Wiener EM window (default 300, open-unmix Separator's wiener_win_len) */
 	wienerWindow?: number
-	/** 'hybrid': segment length in samples when the graph does not declare it (default 343980, htdemucs's 7.8 s) */
+	/** 'hybrid': segment length in samples when the graph does not declare it (default 343980, htdemucs's 7.8 s); 'complex': the preset's (SCNet 485100, 11 s) */
 	segment?: number
+	/** 'complex': segments start every `step` of a segment (default 0.25: each sample in four, as Music-Source-Separation-Training's num_overlap 4) */
+	step?: number
+	/** 'complex': frames per segment when the graph does not declare them (inputs[0].dims[3]) */
+	frames?: number
+	/** 'complex': the STFT window, 'ones' (torch.stft's window=None, SCNet's) or 'hann' (default: the preset's, else 'hann') */
+	window?: 'ones' | 'hann'
+	/** 'complex': the STFT scaled by 1/√n and back, torch.stft's normalized=True (default: the preset's, else true) */
+	normalized?: boolean
 	/** 'openunmix' | 'mask' | 'waveform': chunk length in seconds (default 30) */
 	chunk?: number
 	/** crossfade overlap in seconds between chunks (default 2); must be < chunk */

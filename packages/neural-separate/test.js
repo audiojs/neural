@@ -301,6 +301,52 @@ for (let branch of ['spec', 'wave']) test(`separate: hybrid modelType, ${branch}
 	ok(off < 1e-6, `other sources at the mean: max |x − mean| ${off.toExponential(1)}`)
 })
 
+// ---------------------------------------------------------------- 6b. Complex-spectrogram model
+
+// SCNet's contract mock: frames T, each source's spectrogram a fixed share of the mixture's (shares summing to 1), so
+// the stems are the input scaled, and add back to it. Segments of L every L/4, linear fades, the input reflected out
+// at both ends: what the overlap-add and the STFT around the graph lose shows in the sum.
+function complexSession(T, shares) {
+	return {
+		inputs: [{ name: 'mix_spec', dims: [1, 4, 2049, T] }], outputs: [{ name: 'stems_spec' }],
+		async run(feeds) {
+			let x = feeds.mix_spec.data, n = x.length, z = new Float32Array(shares.length * n)
+			shares.forEach((w, s) => { for (let i = 0; i < n; i++) z[s * n + i] = w * x[i] })
+			return { stems_spec: { data: z, dims: [1, 4 * shares.length, 2049, T] } }
+		},
+		free() {},
+	}
+}
+
+for (let window of ['ones', 'hann']) test(`separate: complex modelType (${window} window): stems are the mixture's shares, > 100 dB over segments and fades`, async () => {
+	// 4 s segments (T = 173 frames of hop 1024), every 1 s over 13 s: longer than two segments less a step, its ends
+	// reflected out; the last segment past the end
+	let fs = 44100, T = 173, L = 172 * 1024 - 300, N = fs * 13 + 77, shares = [0.1, 0.2, 0.3, 0.4], chunks = []
+	let L0 = sine([220, 440, 1100, 5000], 0.4, fs, N, 3, 0.002), R0 = sine([330, 660, 2500, 4000], 0.3, fs, N, 4, 0.002)
+	let r = await separate([L0, R0], {
+		sampleRate: fs, modelType: 'complex', model: { url: 'fake', targets: ['a', 'b', 'c', 'd'] }, segment: L, window, normalized: true,
+		session: async () => complexSession(T, shares), progress: p => chunks.push(p),
+	})
+	let step = Math.floor(L / 4), M = N + 2 * (L - step)
+	is(chunks.length, Math.ceil((M - L) / step) + 1, 'segments every L/4 until one reaches the end of the reflected input')
+	// the input's mean (its DC) goes to no source
+	let mean = 0
+	for (let i = 0; i < N; i++) mean += (L0[i] + R0[i]) / 2 / N
+	;['a', 'b', 'c', 'd'].forEach((t, s) => [L0, R0].forEach((x, c) => {
+		let db = snr(r.stems[t][c], x.map(v => shares[s] * (v - mean))); ok(db > 100, `${t} ch${c}: ${db.toFixed(1)} dB`)
+	}))
+	// a short input: one segment, its rest reflected
+	chunks = []
+	let short = await separate([L0.subarray(0, fs * 3), R0.subarray(0, fs * 3)], {
+		sampleRate: fs, modelType: 'complex', model: { url: 'fake', targets: ['a', 'b', 'c', 'd'] }, segment: L, window,
+		session: async () => complexSession(T, shares), progress: p => chunks.push(p),
+	})
+	is(chunks.length, 1, 'one segment')
+	let x3 = [L0, R0].map(x => x.subarray(0, fs * 3)), m3 = 0
+	for (let i = 0; i < fs * 3; i++) m3 += (x3[0][i] + x3[1][i]) / 2 / (fs * 3)
+	let db = snr(short.stems.d[0], x3[0].map(v => 0.4 * (v - m3))); ok(db > 100, `short: ${db.toFixed(1)} dB`)
+})
+
 // ------------------------------------------- 7. Mono duplication + resampling
 
 test('separate — mono input duplicates to stereo output', async () => {
@@ -352,6 +398,9 @@ test('models: presets name their contract', () => {
 	is(models.umxhq.targets, ['vocals', 'drums', 'bass', 'other'])
 	is(models.htdemucs.modelType, 'hybrid')
 	is(models.htdemucs.targets, ['drums', 'bass', 'other', 'vocals'])
+	is(models['scnet-large'].modelType, 'complex')
+	is(models['scnet-large'].targets, ['drums', 'bass', 'other', 'vocals'])
+	is(models.scnet.modelType, 'complex')
 })
 
 test('separate: preset without its weights: names the missing file and the export script', async () => {
@@ -359,6 +408,7 @@ test('separate: preset without its weights: names the missing file and the expor
 	let x = new Float32Array(4410)
 	await rejects(() => separate([x, x], { sampleRate: 44100, model: 'umxhq', targets: ['vocals'], weights: empty }), /umxhq weights not found: .*umxhq\/vocals\.onnx.*export-openunmix\.py/, 'umxhq')
 	await rejects(() => separate([x, x], { sampleRate: 44100, model: 'htdemucs', weights: empty }), /htdemucs weights not found: .*htdemucs\/htdemucs\.onnx.*export-htdemucs\.py/, 'htdemucs')
+	await rejects(() => separate([x, x], { sampleRate: 44100, model: 'scnet-large', weights: empty }), /scnet-large weights not found: .*scnet-large\/scnet-large\.onnx.*export-scnet\.py/, 'scnet-large')
 	await rejects(() => separate([x, x], { sampleRate: 44100, model: 'umxhq', targets: ['piano'], weights: empty }), /umxhq has no target 'piano'/, 'unknown target')
 })
 
@@ -381,7 +431,9 @@ function reference(name) {
 // htdemucs, htdemucs_ft: demucs.apply.apply_model (split, overlap 0.25, shifts 0), matched to
 // 78-89 dB; ONNX Runtime and PyTorch differ by ~1e-4 relative inside the transformer
 // (export-htdemucs.py --verify).
-for (let [name, minDb] of [['umxhq', 100], ['htdemucs', 70], ['htdemucs_ft', 70]]) {
+// scnet-large, scnet: SCNet.forward on the segments scripts/reference.py's chunked() cuts (separate.js's), 20 s,
+// matched to 114-134 dB (export-scnet.py reduces its GroupNorm statistics axis by axis: as exported, 52-55 dB)
+for (let [name, minDb] of [['umxhq', 100], ['htdemucs', 70], ['htdemucs_ft', 70], ['scnet-large', 100], ['scnet', 100]]) {
 	let ref = reference(name)
 	;(ref ? test : test.skip)(`separate: ${name} matches the Python reference on scripts/reference.py's mix: SNR > ${minDb} dB per stem`, async () => {
 		let { stems } = await separate(ref.mix, { sampleRate: 44100, model: name })

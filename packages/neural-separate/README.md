@@ -1,13 +1,13 @@
 # @audio/neural-separate
 
-> Source separation (stems): Open-Unmix and Hybrid Transformer Demucs through ONNX, matching the original PyTorch implementations.
+> Source separation (stems): SCNet, Hybrid Transformer Demucs and Open-Unmix through ONNX, matching the original PyTorch implementations.
 
 The ML upgrade to [`@audio/vocals`](https://github.com/audiojs/vocals)'s classical center-cancel: instead of one M/S trick, a trained model estimates each target (vocals, drums, bass, other), and the pipeline around it (STFT, Wiener refinement, chunking, overlap-add) is ported from the reference implementations and checked against them.
 
 ```js
 import separate from '@audio/neural-separate'
 
-let { stems, residual } = await separate([left, right], { sampleRate: 44100, model: 'umxhq' })
+let { stems, residual } = await separate([left, right], { sampleRate: 44100, model: 'scnet-large' })
 stems.vocals   // Float32Array[2]
 ```
 
@@ -25,11 +25,13 @@ In the browser `@audio/neural-runtime` runs `onnxruntime-web` instead (`device: 
 |---|---|---|---|---|---|
 | `'umxhq'` | Open-Unmix: bi-LSTM on magnitude spectrograms, multichannel Wiener EM | 4 × 35.6 MB (fp16: 4 × 17.8 MB) | MIT | 6.75 · 6.11 · 5.00 · 3.36 | 0.19 (vocals only: 0.11) · 0.12 · 0.29 |
 | `'htdemucs'` | Hybrid Transformer Demucs: waveform and spectrogram U-Nets joined by a cross-domain transformer | 174 MB | research only | 8.86 · 9.55 · 9.30 · 5.69 | 1.4 (vocals only: 1.2) · 0.70 · 0.21 |
-| `'htdemucs_ft'` | four fine-tuned HTDemucs, one per source | 4 × 174 MB | research only | not measured | vocals only: 1.1 · not measured · not measured |
+| `'htdemucs_ft'` | four fine-tuned HTDemucs, one per source | 4 × 174 MB | research only | 8.67 · 9.45 · 9.68 · 5.58 | vocals only: 1.1 · not measured · not measured |
+| `'scnet-large'` | SCNet-large: band-split convolutions around dual-path LSTMs, on the complex spectrogram | 169 MB (fp16: 85 MB) | MIT | 11.00 · 10.27 · 8.21 · 6.87 | 2.1 · not measured · not measured |
+| `'scnet'` | SCNet: the same at half the width | 43 MB | MIT | 9.88 · 9.43 · 8.35 · 6.15 | 0.70 · not measured · not measured |
 
 SDR as measured below (Verification), identical to the Python originals'. The previews are 7 s excerpts, so these numbers sit apart from full-track results in scale, not in order: the Demucs README reports overall SDR 9.0 for fine-tuned HT Demucs against 5.3 for Open-Unmix on the MUSDB18-HQ test set.
 
-Real-time factor: processing time over duration, lower is faster. 27 s of music; onnxruntime-node and onnxruntime-web 1.30, the web one in headless Chromium (wasm, Metal WebGPU); the best of two to four runs spread over a day on a 14-core M4 Max shared with other jobs (load averages 45 to 180), so upper bounds. The Python originals' best there: 0.43 (open-unmix) and 2.8 (demucs). umxhq's time is mostly JS (ONNX Runtime takes 6 to 12 %: STFT, Wiener EM, iSTFT around it), and it runs faster on wasm than on WebGPU; htdemucs's is about 80 % inference, where WebGPU pays. Memory: umxhq 1.3 GB, hybrid models 3 GB at peak in Node.
+`scnet-large` is ahead of iZotope RX 12 Music Rebalance at its Best quality on drums and other and on most songs for every stem, behind on bass by the median (Measured). Its time is the segments' overlap: each sample is heard in four 11 s segments (`step` 0.25); `step: 0.5` takes half the time (1.0) for 0.07 to 0.17 dB less (27 s of four MUSDB18 training previews end to end, six of them), and a song shorter than a segment takes one. The SCNet times are of one run, a busy machine's (load averages 53 to 93), beside htdemucs's 0.24 and RX 12 Music Rebalance's 1.22 at Best in the same run. Real-time factor: processing time over duration, lower is faster. 27 s of music; onnxruntime-node and onnxruntime-web 1.30, the web one in headless Chromium (wasm, Metal WebGPU); the best of two to four runs spread over a day on a 14-core M4 Max shared with other jobs (load averages 45 to 180), so upper bounds. The Python originals' best there: 0.43 (open-unmix) and 2.8 (demucs). umxhq's time is mostly JS (ONNX Runtime takes 6 to 12 %: STFT, Wiener EM, iSTFT around it), and it runs faster on wasm than on WebGPU; htdemucs's is about 80 % inference, where WebGPU pays. Memory: umxhq 1.3 GB, hybrid models 3 GB at peak in Node.
 
 `targets` picks a subset: `targets: ['vocals']` runs only the vocals graph of `umxhq` (against the residual, see Algorithm: 2.4× faster, vocals SDR 6.50 instead of 6.75) and of `htdemucs_ft`, and skips the other sources' iSTFT for `htdemucs`. Presets resample to their 44.1 kHz and back.
 
@@ -43,11 +45,15 @@ python3 node_modules/@audio/neural-separate/scripts/export-openunmix.py --model 
 
 pip install demucs
 python3 node_modules/@audio/neural-separate/scripts/export-htdemucs.py --model htdemucs --verify
+
+pip install pyyaml
+python3 node_modules/@audio/neural-separate/scripts/export-scnet.py --model scnet-large --verify
 ```
 
 They land in `$AUDIO_NEURAL_CACHE/<model>/`, default `~/.cache/audiojs/neural/<model>/`, where a preset looks in Node; a missing file throws, naming itself and the script. Elsewhere, serve that directory and pass its URL: `separate(audio, { model: 'umxhq', weights: 'https://…/' })`; `@audio/neural-runtime` fetches each file once and caches it (Cache API in the browser). `--verify` compares the ONNX graphs with the PyTorch modules and writes the reference separation `test.js` checks the JS pipeline against. `export-openunmix.py --fp16` also writes float16 weights with float32 I/O, half the size.
 
 - **`export-openunmix.py`** exports each target's `OpenUnmix` through a wrapper that takes the frame count from the traced tensor (upstream reads it off `x.data.shape`, which export freezes), with the TorchScript exporter (the `torch.export` one bakes the LSTM's sequence length into a reshape). Magnitude `[1, C, F, T]` in and out, T dynamic. `umxhq`'s bandwidth restriction (`max_bin`, 1487 of 2049 bins for `n_fft=4096`@44.1kHz) crops the network's *input* below 16 kHz for efficiency; the final dense layer regresses the **full** bin range from that reduced representation (a learned extrapolation, not a literal zero-fill).
+- **`export-scnet.py`** fetches SCNet's code from ZFTurbo/Music-Source-Separation-Training at a pinned commit and the author's MUSDB18-HQ checkpoint from that repository's releases, and exports the network between its STFT and iSTFT (the same split as demucs.onnx's): `mix_spec [1, 4, 2049, 476]` in, `stems_spec [1, 16, 2049, 476]` out, one 11 s segment. Two changes to the graph, neither to its function: the rFFT and irFFT over time in its separation network become products with cosine and sine matrices (torch 2.14 exports no `fft_rfft`), and each `GroupNorm(1, C)` reduces its mean and variance one axis at a time: exported whole, onnxruntime summed a 10-million-value group in float32 and the stems came out 52 to 55 dB from PyTorch's, against 110 dB now (PyTorch's own float32 against float64: 110 dB). `--fp16` also writes float16 weights.
 - **`export-htdemucs.py`** follows [sevagh/demucs.onnx](https://github.com/sevagh/demucs.onnx): the STFT and iSTFT, which ONNX export cannot carry, move out of the graph. Rather than a vendored copy of `htdemucs.py`, it runs upstream's own `forward` with its four transform methods swapped on the instance. One graph per 7.8 s segment: `mix [1, 2, 343980]` and `mix_spec [1, 4, 2048, 336]` (complex as channels) in, `stems_spec [1, 4, 4, 2048, 336]` and `stems_wave [1, 4, 2, 343980]` out; a source is the iSTFT of the first plus the second.
 
 ## Algorithm
@@ -62,6 +68,8 @@ They land in `$AUDIO_NEURAL_CACHE/<model>/`, default `~/.cache/audiojs/neural/<m
 
 **`'hybrid'`** (Hybrid Transformer Demucs): `demucs.apply.apply_model` with `split=True, overlap=0.25, shifts=0`, and `demucs.api`'s normalization by the whole input's mean and standard deviation. Segments of 7.8 s start every 5.85 s; each is centered in its window with the neighbouring input as context, zeros past the ends. Per segment: HTDemucs's framing (reflect re-padding by ¾ hop, `normalized=True`, the Nyquist bin and two edge frames dropped) → ONNX → frequency branch through the iSTFT plus time branch. Segments overlap-add under a triangular window. `shifts` (averaging randomly time-shifted runs, "up to 0.2 points" of SDR per demucs's docstring) is not implemented; the CLI's default single shift averages nothing.
 
+**`'complex'`** (SCNet; any model taking each channel's STFT, re and im as channels, and giving each source's): Music-Source-Separation-Training's `demix()`, its generic mode. The input is normalized by its mean and deviation; segments of 11 s start every `step` of a segment (0.25: every sample in four), each weighted by a window that fades in and out linearly over a tenth of it; an input longer than two segments less a step is first reflected out by that much on each side, and a segment running past the end is reflected out when more than half of it is input, zero-padded when not. Per segment: zero-padded to 476 frames as `SCNet.forward` pads, the model's STFT (n 4096, hop 1024, no window, normalized, centered), ONNX, iSTFT. Departures from `demix()`: the segments stop at the first to reach the end (it runs on while one starts before the end: a 7 s song took three segments, now one), the first and last fades are set per segment (it sets them per batch of 8, so its first segment fades in), and the mean goes back to no source (its callers add it to every one), so the stems sum to the input less its DC.
+
 `modelType: 'waveform'` (Demucs v2-class) skips steps 1–4 entirely: chunked raw audio in `[1, C, N]`, stacked stems out `[1, S, C, N]`, no STFT or Wiener step — Demucs v2 operates in the time domain by design.
 
 ## Verification
@@ -71,6 +79,8 @@ They land in `$AUDIO_NEURAL_CACHE/<model>/`, default `~/.cache/audiojs/neural/<m
 | ONNX vs PyTorch module, random input (`--verify`) | umxhq max \|diff\| ≤ 5.7e-6 of max \|y\| (fp16: ≤ 5.3e-3); stems of htdemucs ≤ 1.6e-4, of htdemucs_ft ≤ 2.5e-4 |
 | Pipeline vs `openunmix.Separator` in float64, 9 s reference mix (`test.js`) | 112–134 dB SNR per stem |
 | Pipeline vs `demucs.apply.apply_model`, same mix (`test.js`) | htdemucs 80–84 dB, htdemucs_ft 78–89 dB SNR per stem |
+| ONNX vs `SCNet.forward`, noise and tones (`export-scnet.py --verify`) | scnet-large max \|diff\| ≤ 2.8e-6 of max \|y\| (fp16: ≤ 6.7e-3), scnet ≤ 2.2e-6 |
+| Pipeline vs `SCNet.forward` on `reference.py`'s segments, a 20 s mix (`test.js`) | scnet-large 114–134 dB, scnet 123–133 dB SNR per stem |
 | `wienerFilter` vs open-unmix's `wiener()`, float64 fixture (`test.js`) | ratio mask: 3e-12; mixture phase: 1.7e-7, upstream's `atan2` adds a float32 π |
 
 The 50 test tracks of the MUSDB18 7 s previews (`musdb.DB(download=True)`; its terms are educational and non-commercial, so it serves measurement only), SDR by [museval](https://github.com/sigsep/sigsep-mus-eval) (BSSEval v4, 1 s windows, median over windows, then over tracks: the SiSEC 2018 aggregation):
@@ -83,6 +93,26 @@ The 50 test tracks of the MUSDB18 7 s previews (`musdb.DB(download=True)`; its t
 | `htdemucs`, this package | 8.86 | 9.55 | 9.30 | 5.69 | 78–88 / 56–75 dB |
 
 Per track, the SDRs differ by at most 0.003 dB.
+
+## Measured against iZotope RX 12
+
+RX 12 Advanced Music Rebalance (VST3 hosted by Pedalboard; [`audio`](https://github.com/audiojs/audio)'s `bench/rx/separate.mjs`, October 2026) beside this package on the same 50 MUSDB18 test previews, the mixture stream in, the stems as references. RX at each quality from its defaults (sensitivity 50 %), a stem soloed (`vocal_solo` and the like); ours at its defaults. Stems: BSSEval v4 SDR as above (museval 0.4.1), the median over tracks, then the songs where each is ahead (paired). Remixes, RX Music Rebalance's own use: vocals 6 dB up, vocals 6 dB down, drums 6 dB down, against the true remix (the mixture with that stem's own part scaled, so the coding difference between MUSDB18's mixture and its stems, 22 to 31 dB, stays as it is), the same SDR of one source; RX's remix renders equal the input plus (g − 1) times its solo to 126 dB and more, so its remixes are made from its solos. Harm: every gain 0 dB, the output against the input. RTF: one render over the preview's 6.8 s.
+
+| 50 songs | vocals | drums | bass | other | vocals +6 | vocals −6 | drums −6 | harm | RTF |
+|---|---|---|---|---|---|---|---|---|---|
+| the mixture as it is | | | | | 8.39 | 10.99 | 10.67 | | |
+| RX 12, Good / Real-time | 6.68 | 6.52 | 4.43 | 3.15 | 15.58 | 18.60 | 17.50 | 128.7 dB | 0.08 |
+| RX 12, Better / Offline | 9.29 | 8.93 | 6.89 | 5.44 | 18.53 | 20.96 | 19.98 | 130.2 dB | 0.53 |
+| RX 12, Best / Offline | **10.89** | 9.85 | **9.66** | 6.45 | 19.46 | **22.26** | 20.85 | 130.2 dB | 2.48 |
+| `umxhq` | 6.74 | 6.11 | 5.00 | 3.36 | 15.09 | 18.35 | 17.32 | bit for bit | 0.16 |
+| `htdemucs` | 8.86 | 9.55 | 9.30 | 5.69 | 17.99 | 20.76 | 20.76 | bit for bit | 1.74 |
+| `htdemucs_ft` | 8.67 | 9.45 | 9.68 | 5.58 | 17.59 | 20.33 | 21.08 | bit for bit | 4.70 |
+| `scnet` | 9.88 | 9.43 | 8.35 | 6.15 | 18.23 | 21.05 | 20.91 | bit for bit | 0.45 |
+| `scnet-large` | **11.00** | **10.27** | 8.21 | **6.87** | **20.20** | 22.11 | **21.88** | bit for bit | 0.96 |
+| … ahead of RX Best on | 33 of 50 | 40 | 34 | 32 | 34 | 30 | 41 | | |
+| … paired median over RX Best | +0.31 | +0.68 | +0.97 | +0.33 | +0.31 | +0.18 | +0.68 | | |
+
+Our remixes are the input plus (g − 1) times the stems, as `audio`'s `rebalance` makes them, so every gain at 0 dB returns the input (RX's, to 128 dB); `rebalance` itself (its solo is the input less the other three stems) scores 10.75 · 10.30 · 8.17 · 6.94 and the same remixes. Against `htdemucs`, the best model here before, RX at Best was ahead on 46 of the 50 songs for vocals (1.62 dB, the paired median). On vocals `scnet-large`'s median is 0.11 dB over RX's and `rebalance`'s 0.14 under it (ahead on 33 songs either way, the means 10.29 and 10.16 against 9.99). On bass it is 1.5 dB under RX's median while ahead on 34 songs, the means level (8.68 against 8.67): its bass falls under 3 dB on 8 songs (RX's on 6), mostly electronic, where it hears the synth bass as other (PR - Happy Daze: none of it, 0.0 dB, against RX's 18.3); SCNet trained on MUSDB18's 100 songs alone, RX on iZotope's own. Averaging `scnet` in (vocals 10.56, bass 8.21), test-time augmentation (the channels swapped, the polarity inverted: 3× the time, +0.01 to +0.02 dB paired) and multichannel Wiener EM over its stems (−0.5 to −2.4 dB on 13 of the songs: it takes the mixture's phase where SCNet estimated its own) were tried and left out. The previews are 7 s, one 11 s segment each: on whole songs each sample is heard in four.
 
 Upstream runs its Wiener EM in float32. On the reference mix that alone moves its stems by 71 to 93 dB SNR against a float64 run of the same code, which this port matches to 112 to 134 dB; the float64 run is the reference.
 
@@ -106,14 +136,16 @@ let vocals = complex.vocals.map(ch => istft(ch, { length: left.length }))
 | Option | Default | |
 |---|---|---|
 | `sampleRate` | — | required unless `audio` is `{ channelData, sampleRate }` |
-| `model` | — | required. Preset `'umxhq' \| 'htdemucs' \| 'htdemucs_ft'` · `url \| bytes` (single target, named `'stem'`) · `{ target: url \| { url, targets }, ... }` (one graph per target, Open-Unmix's own layout; a multi-source graph contributes its own target) · `{ url, targets: [...] }` (one multi-target graph, stacks a target axis) |
+| `model` | — | required. Preset `'scnet-large' \| 'scnet' \| 'umxhq' \| 'htdemucs' \| 'htdemucs_ft'` · `url \| bytes` (single target, named `'stem'`) · `{ target: url \| { url, targets }, ... }` (one graph per target, Open-Unmix's own layout; a multi-source graph contributes its own target) · `{ url, targets: [...] }` (one multi-target graph, stacks a target axis) |
 | `targets` | all | the targets to return |
 | `weights` | `$AUDIO_NEURAL_CACHE` or `~/.cache/audiojs/neural` (Node) | where a preset's files are: URL, or a directory in Node |
-| `modelType` | `'openunmix'` | `'openunmix'` (magnitude out) · `'mask'` (`[0,1]` mask out, multiplied by mixture magnitude) · `'hybrid'` (demucs.onnx contract) · `'waveform'` (Demucs v2-class); presets know theirs |
+| `modelType` | `'openunmix'` | `'openunmix'` (magnitude out) · `'mask'` (`[0,1]` mask out, multiplied by mixture magnitude) · `'hybrid'` (demucs.onnx contract) · `'complex'` (complex spectrogram in and out, SCNet's) · `'waveform'` (Demucs v2-class); presets know theirs |
 | `wiener` | `1` | EM iterations; `0` = raw masks. Ignored for `'hybrid'` and `'waveform'` |
 | `wienerWindow` | `300` | frames per EM window |
 | `chunk` / `overlap` | `30` / `2` (seconds) | `overlap` must be `< chunk`; not used by `'hybrid'`, which segments as demucs does |
-| `segment` | `343980` | `'hybrid'`: segment length in samples when the graph does not declare its input length |
+| `segment` | `343980` | `'hybrid'`: segment length in samples when the graph does not declare its input length; `'complex'`: the preset's (485100) |
+| `step` | `0.25` | `'complex'`: segments start every `step` of a segment (each sample heard in 1/`step` of them) |
+| `window` / `normalized` / `frames` | the preset's | `'complex'`: the model's STFT window (`'ones'`, torch.stft's window=None, or `'hann'`), its 1/√n scaling, its frames per segment when the graph does not declare them |
 | `targetRate` | the preset's rate, else the input rate | resample to the model's rate for inference; stems are resampled back to the input rate |
 | `device` | — | passed through to `@audio/neural-runtime`'s `load()` as `backend` |
 | `dtype` | `'float32'` | only `'float32'` tensor marshalling is implemented; anything else throws |
@@ -124,23 +156,24 @@ Mono input is duplicated to stereo internally (matching `openunmix.utils.preproc
 
 ## Precedence and licenses
 
-Open-source stem separation has three lineages; this package runs the first two.
+Open-source stem separation has these lineages; this package runs SCNet, Open-Unmix and Demucs.
 
 | Project | Code | Weights | |
 |---|---|---|---|
 | **Open-Unmix** (`umx`, `umxhq`) | MIT | MIT ([Zenodo](https://zenodo.org/records/3370489)-declared) | trained on MUSDB18(-HQ); this package's primary target |
 | **Open-Unmix** (`umxl`) | MIT | **CC BY-NC-SA 4.0 — non-commercial only** | despite being the `openunmix` package's own default variant name; trained on a private stems dataset (see the project [README](https://github.com/sigsep/open-unmix-pytorch#pre-trained-models)) |
-| **Demucs** (Meta; `htdemucs`, `htdemucs_ft`) | MIT | **research only**: "The model weights are not covered by the MIT license, and are provided only for scientific purposes" (the author in [#327](https://github.com/facebookresearch/demucs/issues/327), 2022; again in [#508](https://github.com/facebookresearch/demucs/issues/508), 2023) | trained on MUSDB18-HQ plus 800 songs; the repository is archived, maintained at [adefossez/demucs](https://github.com/adefossez/demucs) |
+| **Demucs** (Meta; `htdemucs`, `htdemucs_ft`) | MIT | **research only**: "The model weights are not covered by the MIT license, and are provided only for scientific purposes" (the author in [#327](https://github.com/facebookresearch/demucs/issues/327), 2022; again in [#508](https://github.com/facebookresearch/demucs/issues/508), 2023; the Hugging Face copies he published in 2026 had their `license: mit` tag removed) | trained on MUSDB18-HQ plus 800 songs; the repository is archived, maintained at [adefossez/demucs](https://github.com/adefossez/demucs) |
+| **SCNet** (`scnet`, `scnet-large`; starrytong) | MIT | MIT: "I confirm that the released SCNet and SCNet-large pretrained weights are distributed under the MIT License, consistent with the source code. You are welcome to redistribute the original checkpoints and format-converted versions, including ONNX exports, as part of your MIT-licensed tool, with appropriate attribution." (the author in [starrytong/SCNet#35](https://github.com/starrytong/SCNet/issues/35), 2026) | trained on MUSDB18-HQ; hosted with its configs by [ZFTurbo/Music-Source-Separation-Training](https://github.com/ZFTurbo/Music-Source-Separation-Training) (MIT), whose own MUSDB18-HQ checkpoints (SCNet XL, BS-RoFormer) carry its author's MIT statement only for some files ([#254](https://github.com/ZFTurbo/Music-Source-Separation-Training/issues/254)) |
 | **Spleeter** (Deezer) | MIT | **undocumented** | the README licenses only "the code of Spleeter"; the pretrained weights' license is an open, unresolved question ([deezer/spleeter#898](https://github.com/deezer/spleeter/issues/898)) — do not assume MIT |
 
-Audit any weight source yourself before shipping it — this table reflects what each project states as of this writing, not a guarantee. `scripts/export-openunmix.py` defaults to `umxhq` (not `umxl`) for exactly this reason.
+Audit any weight source yourself before shipping it — this table reflects what each project states as of this writing, not a guarantee. `scripts/export-openunmix.py` defaults to `umxhq` (not `umxl`) for exactly this reason. MUSDB18, which every model here trained on, is licensed for educational use; whether that reaches the weights no project has settled (Défossez in [demucs#384](https://github.com/facebookresearch/demucs/issues/384): "a grey area").
 
 ## Reference
 
-Stöter, Uhlich, Liutkus, Mitsufuji, "Open-Unmix - A Reference Implementation for Music Source Separation," *JOSS* 4(41), 2019. · Rouard, Massa, Défossez, "Hybrid Transformers for Music Source Separation," *ICASSP* 2023. · Duong, Vincent, Gribonval, "Under-determined reverberant audio source separation using a full-rank spatial covariance model," *IEEE TASLP* 18(7), 2010. · Rafii, Liutkus, Stöter, Mimilakis, Bittner, "The MUSDB18 corpus for music separation," 2017. · [norbert](https://github.com/sigsep/norbert) (Liutkus & Stöter) · [open-unmix-pytorch](https://github.com/sigsep/open-unmix-pytorch) · [Demucs](https://github.com/facebookresearch/demucs) · [demucs.onnx](https://github.com/sevagh/demucs.onnx) · [museval](https://github.com/sigsep/sigsep-mus-eval) · [Spleeter](https://github.com/deezer/spleeter).
+Stöter, Uhlich, Liutkus, Mitsufuji, "Open-Unmix - A Reference Implementation for Music Source Separation," *JOSS* 4(41), 2019. · Rouard, Massa, Défossez, "Hybrid Transformers for Music Source Separation," *ICASSP* 2023. · Tong, Zhang, Liu, Li, Yu, "SCNet: Sparse Compression Network for Music Source Separation," *ICASSP* 2024. · Duong, Vincent, Gribonval, "Under-determined reverberant audio source separation using a full-rank spatial covariance model," *IEEE TASLP* 18(7), 2010. · Rafii, Liutkus, Stöter, Mimilakis, Bittner, "The MUSDB18 corpus for music separation," 2017. · [norbert](https://github.com/sigsep/norbert) (Liutkus & Stöter) · [open-unmix-pytorch](https://github.com/sigsep/open-unmix-pytorch) · [Demucs](https://github.com/facebookresearch/demucs) · [demucs.onnx](https://github.com/sevagh/demucs.onnx) · [SCNet](https://github.com/starrytong/SCNet) · [Music-Source-Separation-Training](https://github.com/ZFTurbo/Music-Source-Separation-Training) · [museval](https://github.com/sigsep/sigsep-mus-eval) · [Spleeter](https://github.com/deezer/spleeter).
 
-**Use when:** you have (or can license) an ONNX-exported spectrogram-mask, Hybrid-Demucs or waveform separation model and want to run it — with proper multichannel Wiener refinement, not just the raw mask — dependency-free, in Node or the browser; `umxhq` where the weights must be MIT, `htdemucs` for the higher SDR under research-only terms.<br>
-**Not for:** the classical, model-free case — reach for [`@audio/vocals`](https://github.com/audiojs/vocals) when a center-panned M/S trick is all you need; training a model (this is inference-only); real-time streaming (neither the bi-LSTM Open-Unmix nor Hybrid Transformer Demucs is causal — offline/chunked only, same as upstream).
+**Use when:** you have (or can license) an ONNX-exported spectrogram-mask, Hybrid-Demucs or waveform separation model and want to run it — with proper multichannel Wiener refinement, not just the raw mask — dependency-free, in Node or the browser; `scnet-large` for the highest SDR here under MIT weights, `scnet` for a quarter of its size and a third of its time, `htdemucs` under research-only terms.<br>
+**Not for:** the classical, model-free case — reach for [`@audio/vocals`](https://github.com/audiojs/vocals) when a center-panned M/S trick is all you need; training a model (this is inference-only); real-time streaming (none of Open-Unmix's bi-LSTM, Hybrid Transformer Demucs or SCNet's dual-path LSTMs is causal: offline and chunked only, as upstream).
 
 ---
 

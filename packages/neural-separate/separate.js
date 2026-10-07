@@ -12,6 +12,11 @@
 //   of sevagh/demucs.onnx. 7.8 s segments overlap-added as demucs.apply.apply_model does; each
 //   runs as waveform + complex-as-channels spectrogram in, frequency- and time-branch estimates
 //   out, summed after the iSTFT.
+// 'complex': complex spectrogram models (SCNet: Tong, Zhang, Liu, Li, Yu, "SCNet: Sparse Compression
+//   Network for Music Source Separation", ICASSP 2024; the Band-Split RoFormer family has the same
+//   contract) with their STFT and iSTFT out of the graph: each channel's STFT in, re and im as
+//   channels, each source's out. 11 s segments overlap-added under linear fades, as
+//   ZFTurbo/Music-Source-Separation-Training's demix() runs them.
 // 'waveform': any [1, C, N] → [1, S, C, N] graph.
 //
 // Long inputs run in overlapping chunks, so memory stays bounded by the chunk, not the file.
@@ -342,12 +347,18 @@ function complexInverse(Are, Aim, outRe, outIm, n, re, im) {
 // Demucs source order (demucs/pretrained.py SOURCES), the S axis of its outputs.
 const DEMUCS = ['drums', 'bass', 'other', 'vocals']
 
+// SCNet's STFT (torch.stft's window=None: ones; normalized) and segment, 476 frames of 11 s
+const SCNET = { modelType: 'complex', sampleRate: 44100, targets: DEMUCS, n: 4096, hop: 1024, window: 'ones', normalized: true, segment: 485100, frames: 476 }
+
 // Presets: files are <weights>/<name>/<target>.onnx (one graph per target) or
 // <weights>/<name>/<name>.onnx, as scripts/export-*.py write them.
 export const models = {
 	umxhq: { modelType: 'openunmix', sampleRate: 44100, targets: ['vocals', 'drums', 'bass', 'other'], perTarget: true },
 	htdemucs: { modelType: 'hybrid', sampleRate: 44100, targets: DEMUCS },
 	htdemucs_ft: { modelType: 'hybrid', sampleRate: 44100, targets: DEMUCS, perTarget: true },
+	// SCNet-large and SCNet (starrytong/SCNet, MIT weights) as scripts/export-scnet.py exports them
+	'scnet-large': SCNET,
+	scnet: SCNET,
 }
 
 async function cacheDir() {
@@ -376,7 +387,7 @@ async function checkLocal(graphs, name) {
 	let [{ existsSync }, { fileURLToPath }] = await Promise.all([import('node:fs'), import('node:url')])
 	let missing = files.map(f => fileURLToPath(f)).filter(f => !existsSync(f))
 	if (!missing.length) return
-	let script = models[name].modelType === 'hybrid' ? 'export-htdemucs.py' : 'export-openunmix.py'
+	let script = { hybrid: 'export-htdemucs.py', complex: 'export-scnet.py' }[models[name].modelType] ?? 'export-openunmix.py'
 	throw new Error(`neural-separate: ${name} weights not found: ${missing.join(', ')}. ` +
 		`Produce them with python3 node_modules/@audio/neural-separate/scripts/${script} --model ${name}, ` +
 		`or pass opts.weights: a URL or directory holding ${name}/<file>.onnx`)
@@ -395,12 +406,12 @@ async function resolveModel(opts) {
 		let p = models[model], base = await weightsBase(opts, model)
 		if (want) for (let t of want) if (!p.targets.includes(t)) throw new Error(`neural-separate: ${model} has no target '${t}' (has ${p.targets.join(', ')})`)
 		let targets = pick(p.targets)
-		let sources = p.modelType === 'hybrid' ? DEMUCS : null
+		let sources = p.modelType === 'hybrid' || p.modelType === 'complex' ? DEMUCS : null
 		let graphs = p.perTarget
 			? targets.map(t => ({ spec: `${base}${model}/${t}.onnx`, sources: sources ?? [t], keep: [t] }))
 			: [{ spec: `${base}${model}/${model}.onnx`, sources: sources ?? p.targets, keep: targets }]
 		if (isNode) await checkLocal(graphs, model)
-		return { graphs, modelType: p.modelType, sampleRate: p.sampleRate, targets }
+		return { graphs, modelType: p.modelType, sampleRate: p.sampleRate, targets, preset: p }
 	}
 
 	let graphs
@@ -542,6 +553,23 @@ async function separateSpectral(channels, rate, opts, graphs, modelType, load) {
 
 // ------------------------------------------------------------------ hybrid
 
+// The input over its whole length: (x − mean) / deviation of the channels' mean (demucs.api, and demix's callers
+// with inference.normalize); back(ch) scales a source back and adds the mean, as both do to every source; scale(ch)
+// only scales it back, the mean (the mixture's DC) left to no source.
+function normalize(channels) {
+	let C = channels.length, N = channels[0].length, mono = new Float64Array(N), mean = 0, sq = 0
+	for (let x of channels) for (let i = 0; i < N; i++) mono[i] += x[i] / C
+	for (let i = 0; i < N; i++) mean += mono[i]
+	mean /= N
+	for (let i = 0; i < N; i++) sq += (mono[i] - mean) ** 2
+	let std = Math.sqrt(sq / Math.max(1, N - 1)) + 1e-8
+	return {
+		norm: channels.map(x => Float32Array.from(x, v => (v - mean) / std)),
+		back: ch => { for (let i = 0; i < ch.length; i++) ch[i] = ch[i] * std + mean; return ch },
+		scale: ch => { for (let i = 0; i < ch.length; i++) ch[i] *= std; return ch },
+	}
+}
+
 // One segment through a demucs.onnx-contract graph: STFT and iSTFT as HTDemucs._spec,
 // _magnitude, _mask and _ispec do them (demucs/htdemucs.py, spec.py: torch.stft with
 // normalized=True, n_fft 4096, hop 1024; the Nyquist bin dropped; reflect re-padding by 3/4
@@ -585,15 +613,7 @@ async function hybridSegment(session, mix, want, n, hop) {
 // triangular window normalized by its sum.
 async function separateHybrid(channels, rate, opts, graphs, load) {
 	let n = opts.n ?? 4096, hop = opts.hop ?? 1024
-	let C = channels.length, N = channels[0].length
-	let mono = new Float64Array(N)
-	for (let x of channels) for (let i = 0; i < N; i++) mono[i] += x[i] / C
-	let mean = 0, sq = 0
-	for (let i = 0; i < N; i++) mean += mono[i]
-	mean /= N
-	for (let i = 0; i < N; i++) sq += (mono[i] - mean) ** 2
-	let std = Math.sqrt(sq / Math.max(1, N - 1)) + 1e-8
-	let norm = channels.map(x => Float32Array.from(x, v => (v - mean) / std))
+	let C = channels.length, N = channels[0].length, { norm, back } = normalize(channels)
 
 	let result = {}
 	for (let g of graphs) {
@@ -615,7 +635,85 @@ async function separateHybrid(channels, rate, opts, graphs, load) {
 				g.keep.forEach((name, i) => { res[name] = stems[i].map(ch => ch.subarray(off, off + len)) })
 				return res
 			}, opts.progress)
-			for (let name in out) result[name] = out[name].map(ch => { for (let i = 0; i < N; i++) ch[i] = ch[i] * std + mean; return ch })
+			for (let name in out) result[name] = out[name].map(back)
+		} finally {
+			session.free?.()
+		}
+	}
+	return result
+}
+
+// ------------------------------------------------------------------ complex
+
+// One segment through a complex-spectrogram graph, [1, 2C, F, T] in (channel c's STFT at 2c, re, and 2c + 1, im),
+// [1, 2·S·C, F, T] out (source s, channel c at 2(sC + c), re, and the next, im): the segment zero-padded to
+// (T − 1)·hop samples (SCNet.forward pads so), centered reflect-padded frames, × `scale` (normalized: 1/√n) and
+// back. seg: C channels of L samples; returns the sources at indices `want`, C channels of L samples each.
+async function complexSegment(session, seg, want, n, hop, win, scale, T) {
+	let C = seg.length, L = seg[0].length, F = (n >> 1) + 1, spec = new Float32Array(2 * C * F * T)
+	seg.forEach((x, c) => {
+		let padded = new Float64Array((T - 1) * hop)
+		padded.set(x.subarray(0, padded.length))
+		let { re, im } = stftFlat(padded, n, hop, win, true)
+		let zr = spec.subarray(2 * c * F * T), zi = spec.subarray((2 * c + 1) * F * T)
+		for (let f = 0, k = 0; f < F; f++) for (let t = 0, i = f; t < T; t++, i += F, k++) { zr[k] = re[i] * scale; zi[k] = im[i] * scale }
+	})
+	let name = session.inputs?.[0]?.name ?? 'mix_spec'
+	let z = outputOf(session, await session.run({ [name]: tensor(spec, [1, 2 * C, F, T], 'float32') })).data
+	let env = envelope(T, n, hop, win)
+	return want.map(s => Array.from({ length: C }, (_, c) => {
+		let re = new Float64Array(T * F), im = new Float64Array(T * F), b = 2 * (s * C + c) * F * T
+		// the [F, T] planes read in order, frames written strided
+		for (let f = 0, k = b; f < F; f++) for (let t = 0, i = f; t < T; t++, i += F, k++) { re[i] = z[k] / scale; im[i] = z[k + F * T] / scale }
+		let out = new Float64Array((T - 1) * hop + n)
+		ola(rows(re, F), rows(im, F), out, 0, n, hop, win)
+		return olaFinish(out, env, n, true, L)
+	}))
+}
+
+// demix() of Music-Source-Separation-Training (utils/model_utils.py, generic mode): segments of L samples every
+// `step` of L, each weighted by a window fading in and out linearly over L/10 (the first not in, the last not out),
+// the sum divided by the summed weights. An input longer than two segments less a step is first reflected L − step
+// samples out on each side; a segment running past the end is reflected out when more than half of it is input,
+// zero-padded when not. The input is normalized by its mean and deviation, and the sources scaled back; demix's
+// callers add the mean back to every source, here to none: the stems sum to the input less its DC, which stays in
+// the residual. And two departures: the segments stop at the first to reach the end (demix runs on while one
+// starts before it: a 7 s song took three 11 s segments, now one, its SDR within 0.02 dB), and the first and last
+// fades are set per segment (demix sets them per batch of 8: its first segment fades in, every one of a last
+// batch holds).
+async function separateComplex(channels, rate, opts, graphs, load, p) {
+	let n = opts.n ?? p?.n ?? 4096, hop = opts.hop ?? p?.hop ?? 1024
+	let win = (opts.window ?? p?.window) === 'ones' ? new Float64Array(n).fill(1) : hann(n), scale = (opts.normalized ?? p?.normalized ?? true) ? 1 / Math.sqrt(n) : 1
+	let C = channels.length, N = channels[0].length, { norm, scale: back } = normalize(channels)
+	let result = {}
+	for (let g of graphs) {
+		let session = await load(g.spec)
+		try {
+			let T = session.inputs?.[0]?.dims?.[3]
+			T = typeof T === 'number' && T > 0 ? T : opts.frames ?? p?.frames
+			let L = opts.segment ?? p?.segment ?? (T - 1) * hop, step = Math.max(1, Math.floor(L * (opts.step ?? 0.25)))
+			let border = L - step, wide = N > 2 * border && border > 0
+			let x = wide ? norm.map(c => Float32Array.from({ length: N + 2 * border }, (_, i) => c[reflectIndex(i - border, N)])) : norm
+			let M = x[0].length, fade = Math.floor(L / 10), starts = []
+			for (let s = 0; ; s += step) { starts.push(s); if (s + L >= M) break }
+			let keep = g.keep.map(name => g.sources.indexOf(name))
+			let acc = g.keep.map(() => Array.from({ length: C }, () => new Float64Array(M))), wsum = new Float64Array(M)
+			for (let k = 0; k < starts.length; k++) {
+				let start = starts[k], len = Math.min(L, M - start), reflect = len > L / 2
+				opts.progress?.({ chunk: k + 1, totalChunks: starts.length })
+				let seg = x.map(c => { let s = new Float32Array(L); for (let i = 0; i < L; i++) s[i] = i < len ? c[start + i] : reflect ? c[start + reflectIndex(i, len)] : 0; return s })
+				let stems = await complexSegment(session, seg, keep, n, hop, win, scale, T)
+				for (let i = 0; i < len; i++) {
+					let w = 1
+					if (k > 0 && i < fade) w = i / (fade - 1)
+					if (k < starts.length - 1 && i >= L - fade) w = Math.min(w, (L - 1 - i) / (fade - 1))
+					wsum[start + i] += w
+					for (let j = 0; j < keep.length; j++) for (let c = 0; c < C; c++) acc[j][c][start + i] += stems[j][c][i] * w
+				}
+			}
+			g.keep.forEach((name, j) => {
+				result[name] = acc[j].map(a => back(Float32Array.from({ length: N }, (_, i) => wsum[i + (wide ? border : 0)] > 0 ? a[i + (wide ? border : 0)] / wsum[i + (wide ? border : 0)] : 0)))
+			})
 		} finally {
 			session.free?.()
 		}
@@ -677,7 +775,7 @@ export default async function separate(audio, opts = {}) {
 	if (opts.dtype && opts.dtype !== 'float32') throw new Error(`neural-separate: dtype '${opts.dtype}' not supported: only 'float32' tensor marshalling is implemented`)
 
 	let { channelData, sampleRate: rate } = normalizeAudio(audio, opts)
-	let { graphs, modelType, sampleRate: modelRate, targets } = await resolveModel(opts)
+	let { graphs, modelType, sampleRate: modelRate, targets, preset } = await resolveModel(opts)
 	let empty = () => channelData.map(() => new Float32Array(0))
 	if (!channelData[0].length) return { stems: Object.fromEntries(targets.map(t => [t, empty()])), sampleRate: rate, residual: empty() }
 	let targetRate = opts.targetRate ?? modelRate ?? rate
@@ -685,6 +783,7 @@ export default async function separate(audio, opts = {}) {
 	let load = loader(opts)
 
 	let stemsAtRate = modelType === 'hybrid' ? await separateHybrid(proc, targetRate, opts, graphs, load)
+		: modelType === 'complex' ? await separateComplex(proc, targetRate, opts, graphs, load, preset)
 		: modelType === 'waveform' ? await separateWaveform(proc, targetRate, opts, graphs, load)
 		: await separateSpectral(proc, targetRate, opts, graphs, modelType, load)
 

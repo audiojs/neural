@@ -1,7 +1,7 @@
 {
   "name": "@audio/neural-separate",
-  "version": "0.1.0",
-  "description": "Source separation (stems): Open-Unmix-class spectrogram masking + multichannel Wiener refinement, Hybrid Transformer Demucs, model-agnostic ONNX",
+  "version": "0.2.0",
+  "description": "Source separation (stems): SCNet (MIT weights), Hybrid Transformer Demucs, Open-Unmix with multichannel Wiener refinement, model-agnostic ONNX",
   "type": "module",
   "sideEffects": false,
   "main": "separate.js",
@@ -18,6 +18,7 @@
     "index.d.ts",
     "scripts/export-openunmix.py",
     "scripts/export-htdemucs.py",
+    "scripts/export-scnet.py",
     "scripts/reference.py",
     "NOTICE"
   ],
@@ -41,6 +42,7 @@
     "stems",
     "open-unmix",
     "demucs",
+    "scnet",
     "wiener",
     "onnx"
   ],

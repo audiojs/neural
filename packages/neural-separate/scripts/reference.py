@@ -25,9 +25,48 @@ def test_mix(seconds=9.0, rate=RATE):
     return np.stack([voice + 1.1 * bass + drums + 0.7 * pad, voice + 0.9 * bass + drums + 1.3 * pad]).astype(np.float32)
 
 
-def write(out_dir, separate):
+def normalized(mix, run):
+    """run() on the mix less its mean over its deviation (of the channels' mean, ddof 1, + 1e-8), its output scaled
+    back, the mean added to no source (separate.js's separateComplex)."""
+    mono = mix.astype(np.float64).mean(0)
+    mean, std = mono.mean(), mono.std(ddof=1) + 1e-8
+    return run(((mix - mean) / std).astype(np.float32)) * std
+
+
+def chunked(mix, run, L, step=0.25):
+    """ZFTurbo/Music-Source-Separation-Training's demix() (utils/model_utils.py, generic mode) over run(segment
+    (C, L) float32) -> (S, C, L): segments every step·L until one reaches the end, linear fades of L/10 (the first
+    segment not in, the last not out), the input reflected L - step out on each side when longer than
+    2 (L - step), a segment past the end reflected out when more than half of it is input, else zero-padded;
+    float64 sums (separate.js's separateComplex). -> (S, C, N)"""
+    C, N = mix.shape
+    hop = max(1, int(L * step))
+    border = L - hop
+    wide = N > 2 * border and border > 0
+    x = np.pad(mix, ((0, 0), (border, border)), mode="reflect") if wide else mix
+    M, fade = x.shape[1], L // 10
+    starts = [k * hop for k in range(max(1, -(-(M - L) // hop) + 1))]  # until one reaches the end
+    acc, wsum = None, np.zeros(M)
+    for k, s in enumerate(starts):
+        part = x[:, s:s + L]
+        n = part.shape[1]
+        part = np.pad(part, ((0, 0), (0, L - n)), mode="reflect" if n > L // 2 else "constant")
+        y = np.asarray(run(part.astype(np.float32)), dtype=np.float64)
+        w = np.ones(L)
+        if k > 0:
+            w[:fade] = np.linspace(0, 1, fade)
+        if k < len(starts) - 1:
+            w[L - fade:] = np.linspace(1, 0, fade)
+        acc = np.zeros((y.shape[0], C, M)) if acc is None else acc
+        acc[..., s:s + n] += y[..., :n] * w[:n]
+        wsum[s:s + n] += w[:n]
+    out = acc / np.where(wsum > 0, wsum, 1)
+    return out[..., border:border + N] if wide else out
+
+
+def write(out_dir, separate, seconds=9.0):
     """separate(mix (2, N) float32) -> { target: (2, N) array }"""
-    mix = test_mix()
+    mix = test_mix(seconds)
     mix.tofile(out_dir / "test.f32")
     for name, x in separate(mix).items():
         np.asarray(x, dtype=np.float32).tofile(out_dir / f"test.{name}.f32")
