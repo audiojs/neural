@@ -383,7 +383,7 @@ export const models = {
 	// MRX (merlresearch/cocktail-fork-separation, MIT weights) as scripts/export-mrx.py exports it: dialogue, music
 	// and effects of a soundtrack (Divide and Remaster)
 	mrx: MRX,
-	// TIGER (JusperLee/TIGER, Apache-2.0 weights): the same three stems, three band-split models, 30 to 100 times MRX's time
+	// TIGER (JusperLee/TIGER, Apache-2.0 weights): the same three stems, three band-split models, about 50 times MRX's time
 	tiger: TIGER,
 }
 
