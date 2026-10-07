@@ -129,11 +129,11 @@ Remaster v3 tuning clip), SNR.
 | `'mrx'`, SNR, 30 clips: dialogue · music · effects | 10.92 · 5.17 · 5.72 | 10.92 · 5.17 · 5.72 | = shipped | **10.92 · 5.17 · 5.70** |
 | … the clip that lost most | | −0.002 | | −0.04 |
 | … output (masked spectra), calibration | | 73.8 dB | 40.4 dB | 40.4 dB |
-| `'tiger'`, SNR, 7 of those 30 clips so far | 12.57 · 10.07 · 9.06 | | = shipped | **12.60 · 10.08 · 9.05** |
-| … the clip that lost most | | | | −0.06 |
+| `'tiger'`, SNR, the same 30 clips | 12.68 · 10.24 · 8.06 | | = shipped | **12.66 · 10.23 · 8.03** |
+| … the clip that lost most | | | | −0.10 |
 | … output, calibration | | 73.9 dB | 41.4 dB | 41.4 dB |
 
-Per song or clip the median change is within 0.025 dB everywhere; the largest losses fall where a stem is near silence:
+Per song or clip the median change is within 0.015 dB everywhere; the largest losses fall where a stem is near silence:
 SCNet's and SCNet-large's on PR - Happy Daze, whose vocals they separate at −2 dB SDR as exported (`scnet` with all 82
 weights in int8: −2.6 dB there).
 The remixes (`rebalance`'s, `scene`'s) move as little: vocals +6 dB 20.21 → 20.22 (`scnet-large`), dialogue +6 dB
