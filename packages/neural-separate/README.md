@@ -54,8 +54,9 @@ Measured on Divide and Remaster v3's English test set (Watcharasupat, Wu, Orife,
 TIGER, at about 50 times MRX's time (RTF 10.6 against 0.21 here), is ahead on 29, 28 and 29 of the 30 clips (dialogue, music, effects), by a median 2.3, 3.7 and 3.4 dB. MRX's own README reports 12.5 · 4.2 · 5.7 dB SI-SDR on DnR v2, the set it trained on, whose music holds singing; v3's music holds none, and its loudness and languages differ (v3's paper). DnR v2's test split comes only inside a 116 GB gzip of the whole set; v3's clips are fetched one by one. The real-time factors are of one run on a 14-core M4 Max shared with other jobs (load averages 25 to 60), so upper bounds: `mrx` a 60 s clip in 13 s; `tiger` three models of 15,000 small operators each, every sample in three 12 s segments.
 
 The browser's, the shipped files (Size, below) on 30 s (a song; a Divide and Remaster clip), model load included:
-onnxruntime-web 1.30 in headless Chromium 153, wasm on its default 4 threads, WebGPU on Metal, one run each on a
-14-core M4 Max under load averages of 110 to 300 from other jobs, so upper bounds. Peak memory, the browser's processes
+onnxruntime-web 1.30 in headless Chromium 153, wasm on its default 4 threads, WebGPU on Metal, the faster of two runs
+on a 14-core M4 Max shared with other jobs (load averages 110 to 300; the other run, at 9 to 140 with another job
+training on the GPU, took 1.5 to 2 times as long), so upper bounds. Peak memory, the browser's processes
 together (0.9 GB of it the browser idle): wasm `scnet` 3.0 GB, `scnet-large` 4.6, `mrx` 3.0, `tiger` 3.5; WebGPU 2.1,
 2.4, 3.4, 1.5. On WebGPU `tiger`'s session takes 13 s to make (38,817 nodes), a 60 s clip about 3 minutes, MRX's 45 s;
 on wasm 9 and 0.3 minutes. Float16 compute does not pay: `tiger`'s on WebGPU is 13 % faster and its music 4.7 dB from
