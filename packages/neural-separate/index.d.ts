@@ -62,10 +62,19 @@ export interface ModelPreset {
 	chunk?: number
 	/** the export script that writes its weights */
 	script?: string
+	/** its compact file (scripts/compact.py: int8 weights, a few float16, float32 compute), read before <name>.onnx */
+	file?: string
+	/** the Hugging Face repository hosting it */
+	repo?: string
+	/** the compact file's SHA-256, checked when it is fetched */
+	sha256?: string
 }
 
 /** Model presets by name */
 export const models: Record<ModelName, ModelPreset>
+
+/** The hosted revision (commit) of each compact preset's repository: https://huggingface.co/<repo>/resolve/<revision>/<file> is read without opts.weights in the browser, and in Node when the cache holds neither the file nor its export. Empty: not hosted. */
+export const REVISIONS: Record<'scnet-large' | 'scnet' | 'mrx' | 'tiger', string>
 
 /** A neural-runtime-shaped session — enough of it to drive separate() with a test double. */
 export interface Session {
@@ -84,7 +93,7 @@ export interface SeparateOptions {
 	modelType?: ModelType
 	/** subset of the model's targets to return; spectral models skip the other graphs, and one target runs Wiener EM against the residual */
 	targets?: string[]
-	/** where a preset's files are: URL, or a directory in Node (default $AUDIO_NEURAL_CACHE or ~/.cache/audiojs/neural) */
+	/** where a preset's files are: URL, or a directory in Node (default $AUDIO_NEURAL_CACHE or ~/.cache/audiojs/neural in Node; a compact preset's hosted file, REVISIONS) */
 	weights?: string
 	/** iterations of multichannel Wiener EM refinement (default 1); 0 = raw masks. Ignored for modelType 'hybrid' and 'waveform'. */
 	wiener?: number

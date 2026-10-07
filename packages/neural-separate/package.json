@@ -1,6 +1,6 @@
 {
   "name": "@audio/neural-separate",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Source separation (stems): a song's by SCNet (MIT weights), Hybrid Transformer Demucs, Open-Unmix with multichannel Wiener refinement; a soundtrack's dialogue, music and effects by MRX (MIT weights) and TIGER (Apache-2.0); model-agnostic ONNX",
   "type": "module",
   "sideEffects": false,
@@ -22,6 +22,7 @@
     "scripts/export-mrx.py",
     "scripts/export-tiger.py",
     "scripts/reference.py",
+    "scripts/compact.py",
     "NOTICE"
   ],
   "dependencies": {

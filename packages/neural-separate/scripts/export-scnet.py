@@ -25,7 +25,7 @@ The STFT is SCNet's own: n_fft 4096, hop 1024, no window (torch.stft's default,
 ones), normalized (1/sqrt(4096)), centered with reflect padding.
 
 Writes <out-dir>/<model>.onnx (scnet-large 169 MB, scnet 43 MB) and, with --fp16,
-<model>.fp16.onnx (half that), weights embedded. Default out-dir:
+<model>.fp16.onnx (half that: float16 weights, float32 compute, scripts/compact.py's), weights embedded. Default out-dir:
 $AUDIO_NEURAL_CACHE/<model>, else ~/.cache/audiojs/neural/<model>. --verify compares the stems rebuilt from the ONNX
 output with SCNet.forward on the same segment, and writes the reference
 separation test.js compares the JS pipeline against (scripts/reference.py),
@@ -187,11 +187,11 @@ def export(model, path, opset):
 
 
 def fp16(path, out):
-    """float16 weights, float32 inputs and outputs (onnxruntime's converter, as export-openunmix.py's)."""
-    import onnx
-    from onnxruntime.transformers.float16 import convert_float_to_float16
+    """float16 weights, float32 compute (scripts/compact.py --as fp16)."""
+    sys.path.insert(0, str(Path(__file__).parent))
+    import compact
 
-    onnx.save(convert_float_to_float16(onnx.load(str(path)), keep_io_types=True), str(out))
+    compact.compact(path, out, "fp16")
     print(f"wrote {out} ({out.stat().st_size / 1e6:.1f} MB)")
 
 
@@ -245,7 +245,7 @@ def main():
     ap.add_argument("--model", default="scnet-large", choices=list(MODELS))
     ap.add_argument("--out-dir", default=None, help="default: $AUDIO_NEURAL_CACHE/<model> or ~/.cache/audiojs/neural/<model>")
     ap.add_argument("--opset", type=int, default=17)
-    ap.add_argument("--fp16", action="store_true", help="also write <model>.fp16.onnx (float16 weights, float32 I/O)")
+    ap.add_argument("--fp16", action="store_true", help="also write <model>.fp16.onnx (float16 weights, float32 compute)")
     ap.add_argument("--verify", action="store_true", help="compare with SCNet.forward; write the reference separation")
     args = ap.parse_args()
 

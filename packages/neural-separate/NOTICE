@@ -56,9 +56,11 @@ The MIT License, for each notice above:
     OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
     DEALINGS IN THE SOFTWARE.
 
-No model weights are included. The export scripts write them to the local cache; their terms are
-their authors' (Open-Unmix umxhq: MIT; SCNet and SCNet-large: MIT, Copyright (c) 2024 starrytong,
-redistributable converted with attribution, github.com/starrytong/SCNet/issues/35; Demucs htdemucs
+No model weights are included. The export scripts write them to the local cache, and the compact
+files of SCNet-large, SCNet, MRX and TIGER are fetched from huggingface.co/audiojs (scnet-large, scnet,
+mrx, tiger-dnr, each with its licence and model card); their terms are their authors' (Open-Unmix
+umxhq: MIT; SCNet and SCNet-large: MIT, Copyright (c) 2024 starrytong, redistributable converted with
+attribution, github.com/starrytong/SCNet/issues/35; Demucs htdemucs
 weights: see the README; MRX: MIT, Copyright 2023 Mitsubishi Electric Research Laboratories (MERL), the
 repository's .reuse/dep5 naming each checkpoint; TIGER's DnR model: Apache 2.0, its model card,
 huggingface.co/JusperLee/TIGER-DnR).

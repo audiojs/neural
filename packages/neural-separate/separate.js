@@ -12,7 +12,7 @@
 //   of sevagh/demucs.onnx. 7.8 s segments overlap-added as demucs.apply.apply_model does; each
 //   runs as waveform + complex-as-channels spectrogram in, frequency- and time-branch estimates
 //   out, summed after the iSTFT.
-// 'complex': complex spectrogram models (SCNet: Tong, Zhang, Liu, Li, Yu, "SCNet: Sparse Compression
+// 'complex': complex spectrogram models (SCNet: Tong, Zhu, Chen, Kang, Jiang, Li, Wu, Meng, "SCNet: Sparse Compression
 //   Network for Music Source Separation", ICASSP 2024; the Band-Split RoFormer family has the same
 //   contract) with their STFT and iSTFT out of the graph: each channel's STFT in, re and im as
 //   channels, each source's out. 11 s segments overlap-added under linear fades, as
@@ -27,7 +27,7 @@
 
 import { fft, ifft } from 'fourier-transform'
 import resampleSinc from '@audio/resample-sinc'
-import { load as neuralLoad, tensor } from '@audio/neural-runtime'
+import { load as neuralLoad, tensor, fetchModel } from '@audio/neural-runtime'
 
 const PI2 = Math.PI * 2
 const isNode = typeof process !== 'undefined' && !!process.versions?.node
@@ -371,20 +371,41 @@ const TIGER = {
 	standardize: false, mono: true, script: 'export-tiger.py',
 }
 
-// Presets: files are <weights>/<name>/<target>.onnx (one graph per target) or
-// <weights>/<name>/<name>.onnx, as scripts/export-*.py write them.
+// The compact files (scripts/compact.py: int8 weights, a few float16, float32 compute), each within 0.05 dB of its
+// export's median SDR or SNR per stem (README, Size); their Hugging Face repositories, and SHA-256 checked when fetched
+const FILES = {
+	'scnet-large': { file: 'scnet-large.int8.onnx', repo: 'audiojs/scnet-large', sha256: 'b2dc586a1e0e6c0afe4915e9057ea29111397b7bbf589edc3d85de91de79cd72' },
+	scnet: { file: 'scnet.int8.onnx', repo: 'audiojs/scnet', sha256: '98228931494151762a1c4ab1ec7899a894b1f81fd4a509921a9d2f9bacc50845' },
+	mrx: { file: 'mrx.int8.onnx', repo: 'audiojs/mrx', sha256: 'd876c92d224f5d8cd2207d528b23369da895a6de71fb24132416fcb16f9f8424' },
+	tiger: { file: 'tiger.int8.onnx', repo: 'audiojs/tiger-dnr', sha256: '2189859ac7e89cf4d9d284c6f393e737aaa2b3233ed7ee424ad622012bce7bca' },
+}
+
+// The hosted revision of each compact file's repository (a commit), its URL https://huggingface.co/<repo>/resolve/<revision>/
+// <file>: what a compact preset reads without opts.weights, in the browser, and in Node fetched once into the neural cache
+// (unless the cache holds it or the export). Empty: not hosted.
+export const REVISIONS = {
+	'scnet-large': '95f22d9e68f6cab78aef358f1a0de248d4edf805',
+	scnet: 'e71bcdb42bce1d62b7fae25ba90fcbcf90f73f46',
+	mrx: 'dedc823a0bea2ed085d19e8b7f32589d35169ee8',
+	tiger: '1c959ab7ff8794dc5663b104ba301687ab95d2ab',
+}
+
+const hosted = name => models[name].repo && REVISIONS[name] ? `https://huggingface.co/${models[name].repo}/resolve/${REVISIONS[name]}/${models[name].file}` : null
+
+// Presets: files are <weights>/<name>/<target>.onnx (one graph per target) or <weights>/<name>/<name>.onnx, as
+// scripts/export-*.py write them; a compact preset's <weights>/<name>/<file> first, as scripts/compact.py writes it.
 export const models = {
 	umxhq: { modelType: 'openunmix', sampleRate: 44100, targets: ['vocals', 'drums', 'bass', 'other'], perTarget: true },
 	htdemucs: { modelType: 'hybrid', sampleRate: 44100, targets: DEMUCS },
 	htdemucs_ft: { modelType: 'hybrid', sampleRate: 44100, targets: DEMUCS, perTarget: true },
 	// SCNet-large and SCNet (starrytong/SCNet, MIT weights) as scripts/export-scnet.py exports them
-	'scnet-large': SCNET,
-	scnet: SCNET,
+	'scnet-large': { ...SCNET, ...FILES['scnet-large'] },
+	scnet: { ...SCNET, ...FILES.scnet },
 	// MRX (merlresearch/cocktail-fork-separation, MIT weights) as scripts/export-mrx.py exports it: dialogue, music
 	// and effects of a soundtrack (Divide and Remaster)
-	mrx: MRX,
+	mrx: { ...MRX, ...FILES.mrx },
 	// TIGER (JusperLee/TIGER, Apache-2.0 weights): the same three stems, three band-split models, about 50 times MRX's time
-	tiger: TIGER,
+	tiger: { ...TIGER, ...FILES.tiger },
 }
 
 async function cacheDir() {
@@ -405,18 +426,40 @@ async function weightsBase(opts, name) {
 	return pathToFileURL(w.endsWith('/') ? w : w + '/').href
 }
 
-// Weights produced locally must exist before a session loads them: name the missing file and
-// how to make it, rather than surfacing ENOENT from deep inside the runtime.
-async function checkLocal(graphs, name) {
-	let files = graphs.map(g => g.spec).filter(s => typeof s === 'string' && s.startsWith('file:'))
-	if (!files.length) return
-	let [{ existsSync }, { fileURLToPath }] = await Promise.all([import('node:fs'), import('node:url')])
-	let missing = files.map(f => fileURLToPath(f)).filter(f => !existsSync(f))
-	if (!missing.length) return
-	let script = models[name].script ?? { hybrid: 'export-htdemucs.py', complex: 'export-scnet.py' }[models[name].modelType] ?? 'export-openunmix.py'
-	throw new Error(`neural-separate: ${name} weights not found: ${missing.join(', ')}. ` +
-		`Produce them with python3 node_modules/@audio/neural-separate/scripts/${script} --model ${name}, ` +
-		`or pass opts.weights: a URL or directory holding ${name}/<file>.onnx`)
+// A preset's files in a local directory; a file missing named with how to make it, rather than ENOENT from the runtime.
+// A compact preset reads its compact file, else its export (float32). From the neural cache (no opts.weights) its compact
+// file only as hosted (its SHA-256), else the export, else the hosted file fetched into the cache, checked, written whole;
+// offline, a compact file of another SHA-256 (scripts/compact.py's own) as it is.
+async function local(graphs, name, opts) {
+	let [fs, { fileURLToPath }] = await Promise.all([import('node:fs'), import('node:url')])
+	let file = g => typeof g.spec === 'string' && g.spec.startsWith('file:') ? fileURLToPath(g.spec) : null
+	let here = g => !file(g) || fs.existsSync(file(g)), p = models[name], why = ''
+	let whole = g => ({ ...g, spec: g.spec.replace(/[^/]*$/, `${name}.onnx`), sha256: null })
+	if (p.file) graphs = await Promise.all(graphs.map(async g => {
+		if (!file(g)) return g
+		let cached = opts.weights == null
+		if (here(g) && (!cached || await sha256(fs.readFileSync(file(g))) === p.sha256)) return { ...g, sha256: null }
+		if (here(whole(g))) return whole(g)
+		if (cached && hosted(name)) try { return { ...g, spec: await fetched(name, file(g)), sha256: null } } catch (e) { why = ` (${e.message})` }
+		return { ...g, sha256: null }
+	}))
+	let missing = graphs.filter(g => !here(g)).map(file)
+	if (!missing.length) return graphs
+	let script = p.script ?? { hybrid: 'export-htdemucs.py', complex: 'export-scnet.py' }[p.modelType] ?? 'export-openunmix.py'
+	throw new Error(`neural-separate: ${name} weights not found: ${missing.join(', ')}${why}. ` +
+		`Produce them with python3 node_modules/@audio/neural-separate/scripts/${script} --model ${name}` +
+		(p.file ? ` (and scripts/compact.py --model ${name} for ${p.file})` : '') +
+		`, or pass opts.weights: a URL or directory holding ${name}/<file>.onnx`)
+}
+
+// The hosted compact file into the cache, checked against its SHA-256, written whole or not at all → its file URL
+async function fetched(name, dest) {
+	let [fs, path, { pathToFileURL }] = await Promise.all([import('node:fs'), import('node:path'), import('node:url')])
+	let bytes = await checked(hosted(name), models[name].sha256, { cache: false })
+	fs.mkdirSync(path.dirname(dest), { recursive: true })
+	fs.writeFileSync(dest + '.part', bytes)
+	fs.renameSync(dest + '.part', dest)
+	return pathToFileURL(dest).href
 }
 
 // opts.model → { graphs: [{ spec, sources, keep }], modelType, sampleRate, targets }. A graph's
@@ -429,14 +472,15 @@ async function resolveModel(opts) {
 	let pick = names => want ? names.filter(n => want.includes(n)) : names
 
 	if (typeof model === 'string' && Object.hasOwn(models, model)) {
-		let p = models[model], base = await weightsBase(opts, model)
+		// the browser without opts.weights: the hosted file
+		let p = models[model], url = !isNode && opts.weights == null && hosted(model), base = url ? '' : await weightsBase(opts, model)
 		if (want) for (let t of want) if (!p.targets.includes(t)) throw new Error(`neural-separate: ${model} has no target '${t}' (has ${p.targets.join(', ')})`)
 		let targets = pick(p.targets)
 		let sources = p.sources ?? (p.modelType === 'hybrid' || p.modelType === 'complex' ? DEMUCS : null)
 		let graphs = p.perTarget
 			? targets.map(t => ({ spec: `${base}${model}/${t}.onnx`, sources: sources ?? [t], keep: [t] }))
-			: [{ spec: `${base}${model}/${model}.onnx`, sources: sources ?? p.targets, keep: targets }]
-		if (isNode) await checkLocal(graphs, model)
+			: [{ spec: url || `${base}${model}/${p.file ?? `${model}.onnx`}`, sources: sources ?? p.targets, keep: targets, sha256: p.sha256 }]
+		if (isNode) graphs = await local(graphs, model, opts)
 		return { graphs, modelType: p.modelType, sampleRate: p.sampleRate, targets, preset: p }
 	}
 
@@ -459,8 +503,25 @@ async function resolveModel(opts) {
 // No pooled arena: one htdemucs segment peaks at 2.7 GB RSS in onnxruntime-node instead of 3.2 GB.
 const sessionOptions = { enableCpuMemArena: false, enableMemPattern: false }
 
+// A graph's session; a fetched file with a SHA-256 checked against it first
 function loader(opts) {
-	return spec => opts.session ? opts.session(spec, opts) : neuralLoad(spec, { backend: opts.device, sessionOptions })
+	return async g => {
+		if (opts.session) return opts.session(g.spec, opts)
+		let spec = g.sha256 && !g.spec.startsWith('file:') ? await checked(g.spec, g.sha256) : g.spec
+		return neuralLoad(spec, { backend: opts.device, sessionOptions })
+	}
+}
+
+// A fetched file's bytes, refused unless of its SHA-256
+async function checked(url, hash, opts) {
+	let bytes = await fetchModel(url, opts), hex = await sha256(bytes)
+	if (hex !== hash) throw new Error(`neural-separate: ${url} has SHA-256 ${hex}, expected ${hash}: a partial or altered download (clear the 'audio-neural' cache), or another build of the file`)
+	return bytes
+}
+
+async function sha256(bytes) {
+	let subtle = globalThis.crypto?.subtle ?? (await import('node:crypto')).webcrypto.subtle
+	return Array.from(new Uint8Array(await subtle.digest('SHA-256', bytes)), b => b.toString(16).padStart(2, '0')).join('')
 }
 
 function outputOf(session, out, i = 0) {
@@ -549,7 +610,7 @@ async function separateSpectral(channels, rate, opts, graphs, modelType, load) {
 	let wopts = { iterations, softmask: opts.softmask ?? false, eps: opts.eps, residual }
 	let sessions = []
 	try {
-		for (let g of graphs) sessions.push(await load(g.spec))
+		for (let g of graphs) sessions.push(await load(g))
 		let C = channels.length, N = channels[0].length
 		let { starts, size, weight } = crossfadeChunks(N, rate, opts)
 		return await overlapAdd(N, C, starts, size, weight, async (start, len) => {
@@ -643,7 +704,7 @@ async function separateHybrid(channels, rate, opts, graphs, load) {
 
 	let result = {}
 	for (let g of graphs) {
-		let session = await load(g.spec)
+		let session = await load(g)
 		try {
 			let L = session.inputs?.[0]?.dims?.[2]
 			L = typeof L === 'number' && L > 0 ? L : opts.segment ?? 343980 // htdemucs: int(7.8 · 44100)
@@ -718,7 +779,7 @@ async function separateComplex(channels, rate, opts, graphs, load, p) {
 	let { norm, scale: back } = opts.standardize ?? p?.standardize ?? true ? normalize(channels) : { norm: channels, scale: c => c }
 	let result = {}
 	for (let g of graphs) {
-		let session = await load(g.spec)
+		let session = await load(g)
 		try {
 			let T = session.inputs?.[0]?.dims?.[3]
 			T = typeof T === 'number' && T > 0 ? T : opts.frames ?? p?.frames
@@ -764,7 +825,7 @@ async function separateMultires(channels, rate, opts, graphs, load, p) {
 	let windows = opts.windows ?? p?.windows, hop = opts.hop ?? p?.hop ?? 256
 	let C = channels.length, N = channels[0].length, result = {}
 	for (let g of graphs) {
-		let session = await load(g.spec)
+		let session = await load(g)
 		try {
 			let { starts, size, weight } = crossfadeChunks(N, rate, { ...opts, chunk: opts.chunk ?? p?.chunk })
 			Object.assign(result, await overlapAdd(N, C, starts, size, weight, async (start, len) => {
@@ -847,7 +908,7 @@ async function separateWaveform(channels, rate, opts, graphs, load) {
 	let { starts, size, weight } = crossfadeChunks(N, rate, opts)
 	let result = {}
 	for (let g of graphs) {
-		let session = await load(g.spec)
+		let session = await load(g)
 		try {
 			let out = await overlapAdd(N, C, starts, size, weight, async (start, len) => {
 				let data = new Float32Array(C * len)

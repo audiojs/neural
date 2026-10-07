@@ -3,10 +3,12 @@
 // Real-weight tests run when the exported weights and their reference separations exist under
 // $AUDIO_NEURAL_CACHE or ~/.cache/audiojs/neural (scripts/export-*.py --verify writes both).
 import test, { ok, is, rejects } from 'tst'
-import { existsSync, readFileSync, mkdtempSync } from 'node:fs'
+import { existsSync, readFileSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs'
+import http from 'node:http'
+import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
-import separate, { stft, istft, wienerFilter, models } from './separate.js'
+import separate, { stft, istft, wienerFilter, models, REVISIONS } from './separate.js'
 
 // ---------------------------------------------------------------- utilities
 
@@ -435,14 +437,75 @@ test('separate: preset without its weights: names the missing file and the expor
 	let x = new Float32Array(4410)
 	await rejects(() => separate([x, x], { sampleRate: 44100, model: 'umxhq', targets: ['vocals'], weights: empty }), /umxhq weights not found: .*umxhq\/vocals\.onnx.*export-openunmix\.py/, 'umxhq')
 	await rejects(() => separate([x, x], { sampleRate: 44100, model: 'htdemucs', weights: empty }), /htdemucs weights not found: .*htdemucs\/htdemucs\.onnx.*export-htdemucs\.py/, 'htdemucs')
-	await rejects(() => separate([x, x], { sampleRate: 44100, model: 'scnet-large', weights: empty }), /scnet-large weights not found: .*scnet-large\/scnet-large\.onnx.*export-scnet\.py/, 'scnet-large')
-	await rejects(() => separate([x, x], { sampleRate: 44100, model: 'mrx', weights: empty }), /mrx weights not found: .*mrx\/mrx\.onnx.*export-mrx\.py/, 'mrx')
+	await rejects(() => separate([x, x], { sampleRate: 44100, model: 'scnet-large', weights: empty }), /scnet-large weights not found: .*scnet-large\/scnet-large\.int8\.onnx.*export-scnet\.py.*compact\.py/, 'scnet-large')
+	await rejects(() => separate([x, x], { sampleRate: 44100, model: 'mrx', weights: empty }), /mrx weights not found: .*mrx\/mrx\.int8\.onnx.*export-mrx\.py.*compact\.py/, 'mrx')
 	await rejects(() => separate([x, x], { sampleRate: 44100, model: 'umxhq', targets: ['piano'], weights: empty }), /umxhq has no target 'piano'/, 'unknown target')
 })
 
+// A compact preset reads its compact file, else its export in the same directory
+test('separate: a compact preset reads its compact file, else its export', async () => {
+	let dir = mkdtempSync(path.join(os.tmpdir(), 'neural-separate-')), seen
+	mkdirSync(path.join(dir, 'scnet'))
+	let x = new Float32Array(4410), session = spec => { seen = spec; throw new Error('seen') }
+	writeFileSync(path.join(dir, 'scnet', 'scnet.onnx'), '')
+	await rejects(() => separate([x, x], { sampleRate: 44100, model: 'scnet', weights: dir, session }), /seen/)
+	ok(seen.endsWith('/scnet/scnet.onnx'), 'the export: ' + seen)
+	writeFileSync(path.join(dir, 'scnet', models.scnet.file), '')
+	await rejects(() => separate([x, x], { sampleRate: 44100, model: 'scnet', weights: dir, session }), /seen/)
+	ok(seen.endsWith('/scnet/' + models.scnet.file), 'the compact file: ' + seen)
+})
+
+// The hosted files (Hugging Face, the revisions pinned): each the SHA-256 the package expects. Network: skipped offline.
+const HF = 'https://huggingface.co/'
+let online
+const offline = async () => !(online ??= await fetch(HF, { method: 'HEAD', signal: AbortSignal.timeout(8000) }).then(r => r.ok, () => false)) && (console.log('  offline: skipped'), true)
+test('models: each hosted compact file is pinned to its revision and SHA-256', async () => {
+	if (await offline()) return
+	for (let name of Object.keys(REVISIONS)) {
+		let { repo, file, sha256 } = models[name], url = `${HF}${repo}/resolve/${REVISIONS[name]}/${file}`
+		let res = await fetch(url, { method: 'HEAD', redirect: 'manual' })
+		is(res.headers.get('x-linked-etag')?.replace(/"/g, ''), sha256, `${name}: ${url}`)
+	}
+})
+
+// Without opts.weights and with neither file in the cache, Node fetches the hosted file into the cache, checked, and
+// reads it from there after, offline too
+test('separate: Node fetches a hosted compact file into the cache once, then reads it offline', async () => {
+	if (await offline()) return
+	let cache = process.env.AUDIO_NEURAL_CACHE, dir = mkdtempSync(path.join(os.tmpdir(), 'neural-separate-')), rev = REVISIONS.tiger
+	let seen, x = new Float32Array(4410), session = spec => { seen = spec; throw new Error('seen') }
+	process.env.AUDIO_NEURAL_CACHE = dir
+	try {
+		await rejects(() => separate([x], { sampleRate: 44100, model: 'tiger', session }), /seen/)
+		let file = path.join(dir, 'tiger', models.tiger.file)
+		is(seen, 'file://' + file, 'fetched into the cache')
+		is(createHash('sha256').update(readFileSync(file)).digest('hex'), models.tiger.sha256, 'whole')
+		REVISIONS.tiger = '0000000000000000000000000000000000000000' // unreachable: the cached file serves
+		seen = null
+		await rejects(() => separate([x], { sampleRate: 44100, model: 'tiger', session }), /seen/)
+		is(seen, 'file://' + file, 'read again without the network')
+		process.env.AUDIO_NEURAL_CACHE = mkdtempSync(path.join(os.tmpdir(), 'neural-separate-'))
+		await rejects(() => separate([x], { sampleRate: 44100, model: 'tiger', session }), /tiger weights not found: .* \(neural-runtime: fetch failed/, 'nothing cached, nothing fetched: named')
+	} finally {
+		REVISIONS.tiger = rev
+		if (cache == null) delete process.env.AUDIO_NEURAL_CACHE; else process.env.AUDIO_NEURAL_CACHE = cache
+	}
+}, { timeout: 300_000 })
+
 // ------------------------------------------- 10. Real weights vs the Python reference
 
+// the compact files' stems against the reference, dB: measured on reference.py's mix (README, Verification), less a margin
+const COMPACT = { 'scnet-large': 23, scnet: 44, mrx: 42, tiger: 55 }
+
 const CACHE = process.env.AUDIO_NEURAL_CACHE || path.join(os.homedir(), '.cache', 'audiojs', 'neural')
+
+// A directory holding only a preset's export (its float32 graph, as scripts/export-*.py wrote it)
+function exported(name) {
+	let dir = mkdtempSync(path.join(os.tmpdir(), 'neural-separate-'))
+	mkdirSync(path.join(dir, name))
+	symlinkSync(path.join(CACHE, name, `${name}.onnx`), path.join(dir, name, `${name}.onnx`))
+	return dir
+}
 
 // scripts/reference.py's mix and the original implementation's stems, when exported
 function reference(name) {
@@ -468,12 +531,45 @@ function reference(name) {
 for (let [name, minDb] of [['umxhq', 100], ['htdemucs', 70], ['htdemucs_ft', 70], ['scnet-large', 100], ['scnet', 100], ['mrx', 100], ['tiger', 90]]) {
 	let ref = reference(name)
 	;(ref ? test : test.skip)(`separate: ${name} matches the Python reference on scripts/reference.py's mix: SNR > ${minDb} dB per stem`, async () => {
-		let { stems } = await separate(ref.mix, { sampleRate: 44100, model: name })
+		let { stems } = await separate(ref.mix, { sampleRate: 44100, model: name, weights: models[name].file ? exported(name) : undefined })
 		for (let t in ref.stems) for (let c of [0, 1]) {
 			let db = snr(stems[t][c], ref.stems[t][c])
 			ok(db > minDb, `${t} ch${c}: ${db.toFixed(1)} dB`)
 		}
 	}, { timeout: 1_800_000 }) // htdemucs_ft: four graphs, two segments each; tiger: three models, seven 12 s segments a channel
+}
+
+// a fetched compact file is checked against its SHA-256 before any session: another file refused; the hosted one run
+test('separate: a fetched compact file is checked against its SHA-256 before a session', async () => {
+	let file = path.join(CACHE, 'scnet', models.scnet.file), have = existsSync(file), cache = process.env.AUDIO_NEURAL_CACHE
+	let server = http.createServer((req, res) => res.end(req.url.startsWith('/good/') && have ? readFileSync(file) : Buffer.from('not the file')))
+	await new Promise(r => server.listen(0, r))
+	process.env.AUDIO_NEURAL_CACHE = mkdtempSync(path.join(os.tmpdir(), 'neural-separate-'))
+	try {
+		let url = `http://localhost:${server.address().port}/`, x = new Float32Array(4410)
+		await rejects(() => separate([x], { sampleRate: 44100, model: 'tiger', weights: url + 'bad/' }), /tiger\/tiger\.int8\.onnx has SHA-256 [0-9a-f]{64}, expected/)
+		if (have) is((await separate([x, x], { sampleRate: 44100, model: 'scnet', weights: url + 'good/' })).stems.vocals[0].length, x.length, 'the hosted file runs')
+	} finally {
+		if (cache == null) delete process.env.AUDIO_NEURAL_CACHE; else process.env.AUDIO_NEURAL_CACHE = cache
+		server.close()
+	}
+}, { timeout: 300_000 })
+
+// The compact files (scripts/compact.py at its 40 dB budget: SCNet's five costliest weights float16, the rest of its
+// and MRX's and TIGER's int8) against the Python reference on the same mix, which their exports match to 95 dB and more
+// (above): each stem's error under the mixture's power (a stem near silence on these tones moves far against its own
+// power: SCNet-large's vocals 11 dB), at least what was measured less a margin
+for (let [name, minDb] of Object.entries(COMPACT)) {
+	let ref = reference(name), have = ref && existsSync(path.join(CACHE, name, models[name].file))
+	;(have ? test : test.skip)(`separate: ${name}'s ${models[name].file} on scripts/reference.py's mix: each stem's error ${minDb} dB under the mixture`, async () => {
+		let { stems } = await separate(ref.mix, { sampleRate: 44100, model: name })
+		for (let t in ref.stems) for (let c of [0, 1]) {
+			let e = 0, m = 0, r = ref.stems[t][c], y = stems[t][c], x = ref.mix[c]
+			for (let i = 0; i < x.length; i++) e += (y[i] - r[i]) ** 2, m += x[i] * x[i]
+			let db = 10 * Math.log10(m / e)
+			ok(db > minDb, `${t} ch${c}: ${db.toFixed(1)} dB under the mixture, ${snr(y, r).toFixed(1)} dB under the stem`)
+		}
+	}, { timeout: 1_800_000 })
 }
 
 // ------------------------------------------------------------------- Speed

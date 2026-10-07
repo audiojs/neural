@@ -26,8 +26,8 @@ In the browser `@audio/neural-runtime` runs `onnxruntime-web` instead (`device: 
 | `'umxhq'` | Open-Unmix: bi-LSTM on magnitude spectrograms, multichannel Wiener EM | 4 × 35.6 MB (fp16: 4 × 17.8 MB) | MIT | 6.75 · 6.11 · 5.00 · 3.36 | 0.19 (vocals only: 0.11) · 0.12 · 0.29 |
 | `'htdemucs'` | Hybrid Transformer Demucs: waveform and spectrogram U-Nets joined by a cross-domain transformer | 174 MB | research only | 8.86 · 9.55 · 9.30 · 5.69 | 1.4 (vocals only: 1.2) · 0.70 · 0.21 |
 | `'htdemucs_ft'` | four fine-tuned HTDemucs, one per source | 4 × 174 MB | research only | 8.67 · 9.45 · 9.68 · 5.58 | vocals only: 1.1 · not measured · not measured |
-| `'scnet-large'` | SCNet-large: band-split convolutions around dual-path LSTMs, on the complex spectrogram | 169 MB (fp16: 85 MB) | MIT | 11.00 · 10.27 · 8.21 · 6.87 | 2.1 · not measured · not measured |
-| `'scnet'` | SCNet: the same at half the width | 43 MB | MIT | 9.88 · 9.43 · 8.35 · 6.15 | 0.70 · not measured · not measured |
+| `'scnet-large'` | SCNet-large: band-split convolutions around dual-path LSTMs, on the complex spectrogram | 45 MB (export 169 MB) | MIT | 11.00 · 10.27 · 8.21 · 6.87 | 2.1 · not measured · not measured |
+| `'scnet'` | SCNet: the same at half the width | 13 MB (export 43 MB) | MIT | 9.88 · 9.43 · 8.35 · 6.15 | 0.70 · not measured · not measured |
 
 SDR as measured below (Verification), identical to the Python originals'. The previews are 7 s excerpts, so these numbers sit apart from full-track results in scale, not in order: the Demucs README reports overall SDR 9.0 for fine-tuned HT Demucs against 5.3 for Open-Unmix on the MUSDB18-HQ test set.
 
@@ -37,8 +37,8 @@ A soundtrack's stems, Divide and Remaster's three (the cocktail fork problem: Pe
 
 | `model` | Architecture | Files | Weights | Targets | Real-time factor, Node CPU |
 |---|---|---|---|---|---|
-| `'mrx'` | MRX: magnitudes at three STFT resolutions (Hann 1024, 2048, 8192, hop 256) into one hidden layer, a BLSTM per source, their mean, a real mask per source and resolution | 122 MB | MIT | `dialogue`, `music`, `effects` | 0.21 |
-| `'tiger'` | TIGER: three band-split models (57 bands, multi-scale convolutions and frame and frequency attention, 1.4 M parameters each), a complex mask each, one source kept from each | 29 MB | Apache 2.0 | `dialogue`, `music`, `effects` | 7.5–23 |
+| `'mrx'` | MRX: magnitudes at three STFT resolutions (Hann 1024, 2048, 8192, hop 256) into one hidden layer, a BLSTM per source, their mean, a real mask per source and resolution | 31 MB (export 122 MB) | MIT | `dialogue`, `music`, `effects` | 0.21 |
+| `'tiger'` | TIGER: three band-split models (57 bands, multi-scale convolutions and frame and frequency attention, 1.4 M parameters each), a complex mask each, one source kept from each | 7.3 MB (export 29 MB) | Apache 2.0 | `dialogue`, `music`, `effects` | 7.5–23 |
 
 Measured on Divide and Remaster v3's English test set (Watcharasupat, Wu, Orife, 2024; CC BY-SA 4.0, built from sources that allow commercial use), 150 of its 1200 clips of 60 s, every 8th ([`audio`](https://github.com/audiojs/audio)'s `bench/rx/scene.mjs`): each stem against its reference over the whole clip, SNR the median over clips (the measure Bandit v2's paper reports on this set) and SI-SDR the mean (MRX's on v2); remixes, a stem 6 dB up or down as the input plus (g − 1) times it, against the true remix, SNR, the median.
 
@@ -57,7 +57,11 @@ TIGER, at about 50 times MRX's time (RTF 10.6 against 0.21 here), is ahead on 29
 
 ## Weights
 
-Nothing ships in this package and nothing is fetched by default. Export the weights once from the original checkpoints:
+Nothing ships in this package. `scnet-large`, `scnet`, `mrx` and `tiger` read a compact file each, `<model>.int8.onnx`
+(Size, below), hosted on Hugging Face (`audiojs/scnet-large`, `audiojs/scnet`, `audiojs/mrx`, `audiojs/tiger-dnr`, each
+with its model card and licence): without `weights`, `https://huggingface.co/<repo>/resolve/<revision>/<file>` at the
+revision `REVISIONS` pins, fetched once and checked against its SHA-256 (the browser keeps it in the Cache API, Node in
+the neural cache, below). Every model can also be exported from its original checkpoint:
 
 ```sh
 pip install torch openunmix onnx onnxruntime onnxscript
@@ -74,15 +78,74 @@ python3 node_modules/@audio/neural-separate/scripts/export-mrx.py --verify
 
 pip install safetensors
 python3 node_modules/@audio/neural-separate/scripts/export-tiger.py --verify
+
+python3 node_modules/@audio/neural-separate/scripts/compact.py --model tiger --verify   # tiger.int8.onnx from tiger.onnx
 ```
 
-They land in `$AUDIO_NEURAL_CACHE/<model>/`, default `~/.cache/audiojs/neural/<model>/`, where a preset looks in Node; a missing file throws, naming itself and the script. Elsewhere, serve that directory and pass its URL: `separate(audio, { model: 'umxhq', weights: 'https://…/' })`; `@audio/neural-runtime` fetches each file once and caches it (Cache API in the browser). `--verify` compares the ONNX graphs with the PyTorch modules and writes the reference separation `test.js` checks the JS pipeline against. `export-openunmix.py --fp16` also writes float16 weights with float32 I/O, half the size.
+They land in `$AUDIO_NEURAL_CACHE/<model>/`, default `~/.cache/audiojs/neural/<model>/`, where a preset looks in Node: its compact file when it is the hosted one (its SHA-256), else its export (float32, the numbers the Python original gives), else the hosted file, fetched there once and written whole (offline, a compact file of another SHA-256, `compact.py`'s own build, is read as it is); a missing file throws, naming itself and the script. `weights` a directory: its files as they are, the compact one first. Elsewhere, serve that directory and pass its URL: `separate(audio, { model: 'umxhq', weights: 'https://…/' })`; `@audio/neural-runtime` fetches each file once and caches it (Cache API in the browser). `--verify` compares the ONNX graphs with the PyTorch modules and writes the reference separation `test.js` checks the JS pipeline against. `export-openunmix.py --fp16` also writes float16 weights with float32 I/O, half the size; `export-scnet.py --fp16` float16 weights with float32 compute (`compact.py --as fp16`).
 
 - **`export-openunmix.py`** exports each target's `OpenUnmix` through a wrapper that takes the frame count from the traced tensor (upstream reads it off `x.data.shape`, which export freezes), with the TorchScript exporter (the `torch.export` one bakes the LSTM's sequence length into a reshape). Magnitude `[1, C, F, T]` in and out, T dynamic. `umxhq`'s bandwidth restriction (`max_bin`, 1487 of 2049 bins for `n_fft=4096`@44.1kHz) crops the network's *input* below 16 kHz for efficiency; the final dense layer regresses the **full** bin range from that reduced representation (a learned extrapolation, not a literal zero-fill).
 - **`export-scnet.py`** fetches SCNet's code from ZFTurbo/Music-Source-Separation-Training at a pinned commit and the author's MUSDB18-HQ checkpoint from that repository's releases, and exports the network between its STFT and iSTFT (the same split as demucs.onnx's): `mix_spec [1, 4, 2049, 476]` in, `stems_spec [1, 16, 2049, 476]` out, one 11 s segment. Two changes to the graph, neither to its function: the rFFT and irFFT over time in its separation network become products with cosine and sine matrices (torch 2.14 exports no `fft_rfft`), and each `GroupNorm(1, C)` reduces its mean and variance one axis at a time: exported whole, onnxruntime summed a 10-million-value group in float32 and the stems came out 52 to 55 dB from PyTorch's, against 110 dB now (PyTorch's own float32 against float64: 110 dB). `--fp16` also writes float16 weights.
 - **`export-mrx.py`** fetches MRX's code and MERL's checkpoint (`default_mrx_pre_trained_weights.pth`, trained with the SNR loss so its stems keep the mixture's level; the three others are scale-invariant or trained on loudness- or EQ-adapted stems, and their stems come out at another level: on Divide and Remaster v3 their SNR is negative where their SI-SDR is up to 1 dB higher) from merlresearch/cocktail-fork-separation at a pinned commit, and exports the network between its STFTs and iSTFTs: each channel's three magnitude spectrograms `mag_1024 [B, 513, T]`, `mag_2048 [B, 1025, T]`, `mag_8192 [B, 4097, T]` in (scaled 1/√n, torch.stft's `normalized=True`), the masks `mask_<n> [B, 3, F, T]` out, music, speech and sfx; B and T free.
 - **`export-tiger.py`** fetches TIGER's model code (JusperLee/TIGER, `look2hear/models/tiger_dnr.py` and the two layer modules it reads) at a pinned commit and its Divide and Remaster weights (huggingface.co/JusperLee/TIGER-DnR) at a pinned revision, and exports TIGERDNR's three models between their STFT and iSTFT as one graph, each its kept source (the first's dialogue, the second's effects, the third's music): `mix_spec [1, 2, 1025, 1034]` (one channel's STFT, n 2048, hop 512, Hann, unnormalized) in, `stems_spec [1, 6, 1025, 1034]` (dialogue, music, effects, re and im) out, one 12 s segment. Three changes to the graph, none to its function: `F.adaptive_avg_pool1d`, which the exporter takes only for output sizes dividing the input's, becomes a cumulative sum read at torch's windows; UConvBlock's global sum starts at its first term, not at a zeros tensor exported as a constant the size of the features; each `GroupNorm(1, C)` reduces axis by axis, as SCNet's. ONNX Runtime runs the graph in 12 s segments at about twice real time on a CPU: three models of 15,000 small operators each, every sample in three segments.
 - **`export-htdemucs.py`** follows [sevagh/demucs.onnx](https://github.com/sevagh/demucs.onnx): the STFT and iSTFT, which ONNX export cannot carry, move out of the graph. Rather than a vendored copy of `htdemucs.py`, it runs upstream's own `forward` with its four transform methods swapped on the instance. One graph per 7.8 s segment: `mix [1, 2, 343980]` and `mix_spec [1, 4, 2048, 336]` (complex as channels) in, `stems_spec [1, 4, 4, 2048, 336]` and `stems_wave [1, 4, 2, 343980]` out; a source is the iSTFT of the first plus the second.
+
+## Size
+
+`scnet-large`, `scnet`, `mrx` and `tiger` each read one compact file, `<model>.int8.onnx`, that `scripts/compact.py`
+makes from the export: the weights stored in 8 bits (symmetric, a scale per output channel; an LSTM's per gate row and
+direction), the few whose rounding costs most in 16, computed in float32: onnxruntime folds each weight's Cast and scale
+at load, on every backend, so the session holds float32 weights and runs as fast as the export. A variant is kept when
+its cost is negligible: every stem's median within 0.05 dB of the export's (SDR on the 50 MUSDB18 test previews, SNR on
+Divide and Remaster v3 test clips) and no song or clip worse by 0.5 dB or more; the smallest such is shipped.
+
+| `model` | export (float32) | float16 weights | int8, every weight | **shipped**: int8, the costliest float16 | its gzip · brotli |
+|---|---|---|---|---|---|
+| `'scnet-large'` | 169.2 MB | 86.5 MB | 44.7 MB | **45.1 MB**: 83 of 88 weights int8 | 39.8 · 39.0 MB |
+| `'scnet'` | 42.8 MB | 23.2 MB | 12.8 MB | **12.9 MB**: 77 of 82 | 10.7 · 10.2 MB |
+| `'mrx'` | 122.3 MB | 61.5 MB | 31.3 MB | **31.3 MB**: all 39 | 27.5 · 26.6 MB |
+| `'tiger'` | 28.6 MB (18.8 folded) | 10.9 MB | 7.3 MB | **7.3 MB**: all 444 | 5.2 · 2.6 MB |
+
+Against the export, on the same songs or clips: the median per stem, then the largest loss on one song or clip, dB; and
+the graph's own output against the export's on a calibration excerpt (two MUSDB18 training previews; a Divide and
+Remaster v3 tuning clip), SNR.
+
+| `model`, measure | export | float16 weights | int8, every weight | shipped |
+|---|---|---|---|---|
+| `'scnet-large'`, SDR: vocals · drums · bass · other | 11.00 · 10.27 · 8.21 · 6.87 | 10.99 · 10.27 · 8.21 · 6.87 | | **10.96 · 10.26 · 8.20 · 6.92** |
+| … the song that lost most | | −0.004 | | −0.43 |
+| … output, calibration | | 62.3 dB | 24.0 dB | 43.7 dB |
+| `'scnet'`, SDR | 9.88 · 9.43 · 8.35 · 6.15 | 9.88 · 9.43 · 8.35 · 6.15 | 9.87 · 9.44 · 8.32 · 6.13 | **9.88 · 9.44 · 8.35 · 6.14** |
+| … the song that lost most | | −0.004 | −2.61 | −0.29 |
+| … output, calibration | | 60.6 dB | 23.4 dB | 42.4 dB |
+| `'mrx'`, SNR, 30 clips: dialogue · music · effects | 10.92 · 5.17 · 5.72 | 10.92 · 5.17 · 5.72 | = shipped | **10.92 · 5.17 · 5.70** |
+| … the clip that lost most | | −0.002 | | −0.04 |
+| … output (masked spectra), calibration | | 73.8 dB | 40.4 dB | 40.4 dB |
+| `'tiger'`, SNR, 7 of those 30 clips so far | 12.57 · 10.07 · 9.06 | | = shipped | **12.60 · 10.08 · 9.05** |
+| … the clip that lost most | | | | −0.06 |
+| … output, calibration | | 73.9 dB | 41.4 dB | 41.4 dB |
+
+Per song or clip the median change is within 0.025 dB everywhere; the largest losses fall where a stem is near silence:
+SCNet's and SCNet-large's on PR - Happy Daze, whose vocals they separate at −2 dB SDR as exported (`scnet` with all 82
+weights in int8: −2.6 dB there).
+The remixes (`rebalance`'s, `scene`'s) move as little: vocals +6 dB 20.21 → 20.22 (`scnet-large`), dialogue +6 dB
+18.29 → 18.30 (`mrx`).
+
+Which weights stay float16: each weight rounded alone to int8 on a calibration excerpt (two MUSDB18 training previews;
+a Divide and Remaster v3 tuning clip), the others float32, its cost the error it adds over the output's power; the
+weights go to int8 in order of that cost per byte saved while the costs' sum stays 40 dB under the output (separate
+weights' costs add: the sum predicted the whole to 0.2 dB). SCNet keeps the five layers ending its decoder in float16,
+1 % of its values (`decoder.2.0`'s convolution, `decoder.1.1`'s three transposed convolutions, `decoder.2.1`'s first:
+each alone at int8 26.8 to 39.0 dB); MRX (40.4 dB) and TIGER (41.4 dB) keep none.
+
+Tried and left out: 4-bit weights (blocks of 32: SCNet's stems 7 dB from float32's; its LSTMs and linear layers alone,
+18 dB); int8 scales per block of 32 values rather than per channel (31.5 dB against 26.3: still the same decoder
+layers); DequantizeLinear for the int8 weights (onnxruntime 1.30 fuses it with the MatMul it feeds into MatMulNBits,
+which quantizes the activations to int8 on a CPU: MRX 38.4 dB from float32 so, 40.4 as stored).
+
+Hosts send these files as they are: Hugging Face's CDN and raw.githubusercontent.com set no Content-Encoding on a binary
+(both answer any origin, `Access-Control-Allow-Origin: *`). gzip would save 12 to 17 % of SCNet's and MRX's, 29 % of
+TIGER's, brotli 14 to 21 % and 65 % (TIGER's graph, 38,817 nodes, is most of its file): not worth a decoder in the page.
 
 ## Algorithm
 
@@ -111,12 +174,16 @@ TIGER's DnR model runs as `'complex'` with its own segments, those of `TIGERDNR.
 | ONNX vs PyTorch module, random input (`--verify`) | umxhq max \|diff\| ≤ 5.7e-6 of max \|y\| (fp16: ≤ 5.3e-3); stems of htdemucs ≤ 1.6e-4, of htdemucs_ft ≤ 2.5e-4 |
 | Pipeline vs `openunmix.Separator` in float64, 9 s reference mix (`test.js`) | 112–134 dB SNR per stem |
 | Pipeline vs `demucs.apply.apply_model`, same mix (`test.js`) | htdemucs 80–84 dB, htdemucs_ft 78–89 dB SNR per stem |
-| ONNX vs `SCNet.forward`, noise and tones (`export-scnet.py --verify`) | scnet-large max \|diff\| ≤ 2.8e-6 of max \|y\| (fp16: ≤ 6.7e-3), scnet ≤ 2.2e-6 |
+| ONNX vs `SCNet.forward`, noise and tones (`export-scnet.py --verify`) | scnet-large max \|diff\| ≤ 2.8e-6 of max \|y\|, scnet ≤ 2.2e-6 |
 | Pipeline vs `SCNet.forward` on `reference.py`'s segments, a 20 s mix (`test.js`) | scnet-large 114–134 dB, scnet 123–133 dB SNR per stem |
 | ONNX vs `MRX.forward`, noise and tones (`export-mrx.py --verify`) | max \|diff\| ≤ 1.2e-6 of max \|y\| |
 | Pipeline vs `separate.separate_soundtrack` (pyloudnorm -27 LUFS in and back), a 20 s mix (`test.js`) | 101–134 dB SNR per stem, in one chunk; in 8 s chunks 12–50 dB |
 | ONNX vs the three `TIGER.forward`, one 12 s segment of tones and noise (`export-tiger.py --verify`) | max \|diff\| ≤ 4.2e-7 of max \|y\| |
 | Pipeline vs `TIGERDNR.wav_chunk_inference`, its segments through the verified graph, a 20 s mix (`test.js`) | 95–140 dB SNR per stem |
+| Compact file vs export, a calibration excerpt (`compact.py --verify`) | scnet-large 43.7 dB, scnet 42.4, mrx 40.4, tiger 41.4 SNR (the worst output); folding alone: bit for bit |
+| Pipeline, compact file vs `reference.py`'s stems, the same 20 s mix (`test.js`) | each stem's error under the mixture: scnet-large 25.7 dB (its other and vocals, which trade the synthetic voice; drums and bass 51), scnet 47.0, mrx 45.6, tiger 58.9 |
+| Hosted files: the pinned revisions' SHA-256 (`test.js`, online); a fetched file of another refused | as `models[name].sha256` |
+| Browser (onnxruntime-web, Chromium) vs Node, the same compact file, 30 s | `rebalance` and `scene` through `audio`, 8 s, the files fetched from Hugging Face: the output 135 and 145 dB from Node's on wasm, 134 and 148 dB on WebGPU |
 | `wienerFilter` vs open-unmix's `wiener()`, float64 fixture (`test.js`) | ratio mask: 3e-12; mixture phase: 1.7e-7, upstream's `atan2` adds a float32 π |
 
 The 50 test tracks of the MUSDB18 7 s previews (`musdb.DB(download=True)`; its terms are educational and non-commercial, so it serves measurement only), SDR by [museval](https://github.com/sigsep/sigsep-mus-eval) (BSSEval v4, 1 s windows, median over windows, then over tracks: the SiSEC 2018 aggregation):
@@ -174,7 +241,7 @@ let vocals = complex.vocals.map(ch => istft(ch, { length: left.length }))
 | `sampleRate` | — | required unless `audio` is `{ channelData, sampleRate }` |
 | `model` | — | required. Preset `'scnet-large' \| 'scnet' \| 'umxhq' \| 'htdemucs' \| 'htdemucs_ft' \| 'mrx' \| 'tiger'` · `url \| bytes` (single target, named `'stem'`) · `{ target: url \| { url, targets }, ... }` (one graph per target, Open-Unmix's own layout; a multi-source graph contributes its own target) · `{ url, targets: [...] }` (one multi-target graph, stacks a target axis) |
 | `targets` | all | the targets to return |
-| `weights` | `$AUDIO_NEURAL_CACHE` or `~/.cache/audiojs/neural` (Node) | where a preset's files are: URL, or a directory in Node |
+| `weights` | `$AUDIO_NEURAL_CACHE` or `~/.cache/audiojs/neural` (Node); a compact preset's hosted file (`REVISIONS`) | where a preset's files are: URL, or a directory in Node |
 | `modelType` | `'openunmix'` | `'openunmix'` (magnitude out) · `'mask'` (`[0,1]` mask out, multiplied by mixture magnitude) · `'hybrid'` (demucs.onnx contract) · `'complex'` (complex spectrogram in and out, SCNet's) · `'multires'` (magnitudes at several resolutions in, masks out, MRX's) · `'waveform'` (Demucs v2-class); presets know theirs |
 | `wiener` | `1` | EM iterations; `0` = raw masks. Ignored for `'hybrid'` and `'waveform'` |
 | `wienerWindow` | `300` | frames per EM window |
@@ -210,7 +277,7 @@ Audit any weight source yourself before shipping it — this table reflects what
 
 ## Reference
 
-Stöter, Uhlich, Liutkus, Mitsufuji, "Open-Unmix - A Reference Implementation for Music Source Separation," *JOSS* 4(41), 2019. · Rouard, Massa, Défossez, "Hybrid Transformers for Music Source Separation," *ICASSP* 2023. · Xu, Li, Chen, Hu, "TIGER: Time-frequency Interleaved Gain Extraction and Reconstruction for Efficient Speech Separation," *ICLR* 2025. · Petermann, Wichern, Wang, Le Roux, "The Cocktail Fork Problem: Three-Stem Audio Separation for Real-World Soundtracks," *ICASSP* 2022. · Watcharasupat, Wu, Orife, "Remastering Divide and Remaster: A Cinematic Audio Source Separation Dataset with Multilingual Support," 2024. · Tong, Zhang, Liu, Li, Yu, "SCNet: Sparse Compression Network for Music Source Separation," *ICASSP* 2024. · Duong, Vincent, Gribonval, "Under-determined reverberant audio source separation using a full-rank spatial covariance model," *IEEE TASLP* 18(7), 2010. · Rafii, Liutkus, Stöter, Mimilakis, Bittner, "The MUSDB18 corpus for music separation," 2017. · [norbert](https://github.com/sigsep/norbert) (Liutkus & Stöter) · [open-unmix-pytorch](https://github.com/sigsep/open-unmix-pytorch) · [Demucs](https://github.com/facebookresearch/demucs) · [demucs.onnx](https://github.com/sevagh/demucs.onnx) · [SCNet](https://github.com/starrytong/SCNet) · [cocktail-fork-separation](https://github.com/merlresearch/cocktail-fork-separation) · [TIGER](https://github.com/JusperLee/TIGER) · [pyloudnorm](https://github.com/csteinmetz1/pyloudnorm) · [Music-Source-Separation-Training](https://github.com/ZFTurbo/Music-Source-Separation-Training) · [museval](https://github.com/sigsep/sigsep-mus-eval) · [Spleeter](https://github.com/deezer/spleeter).
+Stöter, Uhlich, Liutkus, Mitsufuji, "Open-Unmix - A Reference Implementation for Music Source Separation," *JOSS* 4(41), 2019. · Rouard, Massa, Défossez, "Hybrid Transformers for Music Source Separation," *ICASSP* 2023. · Xu, Li, Chen, Hu, "TIGER: Time-frequency Interleaved Gain Extraction and Reconstruction for Efficient Speech Separation," *ICLR* 2025. · Petermann, Wichern, Wang, Le Roux, "The Cocktail Fork Problem: Three-Stem Audio Separation for Real-World Soundtracks," *ICASSP* 2022. · Watcharasupat, Wu, Orife, "Remastering Divide and Remaster: A Cinematic Audio Source Separation Dataset with Multilingual Support," 2024. · Tong, Zhu, Chen, Kang, Jiang, Li, Wu, Meng, "SCNet: Sparse Compression Network for Music Source Separation," *ICASSP* 2024 (arXiv:2401.13276). · Duong, Vincent, Gribonval, "Under-determined reverberant audio source separation using a full-rank spatial covariance model," *IEEE TASLP* 18(7), 2010. · Rafii, Liutkus, Stöter, Mimilakis, Bittner, "The MUSDB18 corpus for music separation," 2017. · [norbert](https://github.com/sigsep/norbert) (Liutkus & Stöter) · [open-unmix-pytorch](https://github.com/sigsep/open-unmix-pytorch) · [Demucs](https://github.com/facebookresearch/demucs) · [demucs.onnx](https://github.com/sevagh/demucs.onnx) · [SCNet](https://github.com/starrytong/SCNet) · [cocktail-fork-separation](https://github.com/merlresearch/cocktail-fork-separation) · [TIGER](https://github.com/JusperLee/TIGER) · [pyloudnorm](https://github.com/csteinmetz1/pyloudnorm) · [Music-Source-Separation-Training](https://github.com/ZFTurbo/Music-Source-Separation-Training) · [museval](https://github.com/sigsep/sigsep-mus-eval) · [Spleeter](https://github.com/deezer/spleeter).
 
 **Use when:** you have (or can license) an ONNX-exported spectrogram-mask, Hybrid-Demucs or waveform separation model and want to run it — with proper multichannel Wiener refinement, not just the raw mask — dependency-free, in Node or the browser; `scnet-large` for the highest SDR here under MIT weights, `scnet` for a quarter of its size and a third of its time, `htdemucs` under research-only terms.<br>
 **Not for:** the classical, model-free case — reach for [`@audio/vocals`](https://github.com/audiojs/vocals) when a center-panned M/S trick is all you need; training a model (this is inference-only); real-time streaming (none of Open-Unmix's bi-LSTM, Hybrid Transformer Demucs or SCNet's dual-path LSTMs is causal: offline and chunked only, as upstream).
