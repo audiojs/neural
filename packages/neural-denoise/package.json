@@ -1,6 +1,6 @@
 {
   "name": "@audio/neural-denoise",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Neural speech enhancement: RNNoise (Valin 2018) in pure JS, bit-exact to its C, weights bundled; DeepFilterNet3 through ONNX Runtime, matching the Python original; music passes through untouched (inaSpeechSegmenter's speech/music/noise CNN)",
   "type": "module",
   "sideEffects": false,
@@ -39,7 +39,7 @@
   ],
   "dependencies": {
     "@audio/neural-runtime": "^0.1.0",
-    "@audio/resample-sinc": "^1.2.0"
+    "@audio/resample-sinc": "^1.3.0"
   },
   "devDependencies": {
     "audio-lena": "^3.0.1",

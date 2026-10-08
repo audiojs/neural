@@ -6,7 +6,7 @@
 // quanta only), so the delay is constant: 960 + 479 = 1439 samples at 48 kHz, 30 ms. Other rates go to
 // 48 kHz and back through a streaming form of @audio/resample-sinc's Lanczos kernel, the resampler denoise()
 // uses offline; its lookahead adds to the delay (1354 samples at 44.1 kHz, 30.7 ms). The output is
-// denoise()'s: at 48 kHz sample for sample; at other rates, with resample-sinc 1.2.0, except within 50 ms of
+// denoise()'s: at 48 kHz sample for sample; at other rates, with resample-sinc 1.3.0, except within 50 ms of
 // the end, where the offline resampler sees the end and a stream sees the host's trailing silence.
 //
 // limit (dB): the input is mixed back in at 10^(−limit/20), so noise drops by at most `limit`; 0 lifts it
@@ -25,6 +25,7 @@
 // Channels are denoised independently; a channel's state (70 KB, and the guard's 0.3 MB) is created on its first
 // block, as the worklet does, since hosts declare up to 32 channels.
 
+import { phases } from '@audio/resample-sinc'
 import { model, create, FRAME, LIMIT } from './rnnoise.js'
 import { weights } from './denoise.js'
 import { guardNet, online, ramp, blend } from './guard.js'
@@ -47,18 +48,34 @@ const latency = sr => sr === RATE ? DELAY + PRIME : Math.floor((taps(RATE, sr) +
 
 /**
  * @audio/resample-sinc's resample() (Lanczos, a = 16) as a stream, in its arithmetic, so its samples: `push(x)`
- * calls `emit(v)` for every output whose taps have all arrived. Output i sits at input position i·from/to;
- * taps before the start are left out and the weights renormalized, as resample() does at its edges.
+ * calls `emit(v)` for every output whose taps have all arrived. Output i sits at input position i·from/to; at integer
+ * rates it reads resample()'s phase table, at others it weighs by angle addition as resample() does there; taps before
+ * the start are left out and the weights renormalized, as resample() does at its edges.
  */
 function resampler(from, to, emit) {
 	let rate = from / to, scale = rate > 1 ? 1 / rate : 1, T = Math.ceil(HALF / scale), K = HALF / (Math.PI * Math.PI)
+	// input history: an output reads 2T samples, the newest of them just arrived
+	let mask = (1 << Math.ceil(Math.log2(2 * T + 1))) - 1, ring = new Float32Array(mask + 1), n = 0, i = 0
+	let tab = phases(from, to)
+	if (tab) {
+		let { L, M, W, J0, J1 } = tab, S = 2 * T, p = 0, base = 0
+		return x => {
+			for (let s = 0; s < x.length; s++) {
+				ring[n++ & mask] = x[s]
+				while (base + T < n) {
+					let lo = base + 1 - T, o = p * S - lo, sum = 0, w = 0
+					for (let j = Math.max(0, lo + J0[p]), e = lo + J1[p]; j < e; j++) { let k = W[o + j]; sum += ring[j & mask] * k; w += k }
+					emit(Math.fround(w !== 0 ? sum / w : 0))
+					if ((p += M) >= L) { let q = Math.floor(p / L); base += q; p -= q * L }
+				}
+			}
+		}
+	}
 	let A = new Float64Array(2 * T), B = new Float64Array(2 * T), C = new Float64Array(2 * T), D = new Float64Array(2 * T)
 	for (let j = 0, t = 1 - T; t <= T; t++, j++) {
 		let a = Math.PI * scale * t
 		A[j] = Math.sin(a); B[j] = Math.cos(a); C[j] = Math.sin(a / HALF); D[j] = Math.cos(a / HALF)
 	}
-	// input history: an output reads 2T samples, the newest of them just arrived
-	let mask = (1 << Math.ceil(Math.log2(2 * T + 1))) - 1, ring = new Float32Array(mask + 1), n = 0, i = 0
 	return x => {
 		for (let s = 0; s < x.length; s++) {
 			ring[n++ & mask] = x[s]
