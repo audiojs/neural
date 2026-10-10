@@ -467,18 +467,33 @@ async function local(graphs, name, opts) {
 }
 
 // A preset's own WebGPU engine (roformer.js) as a session, its tensors from `weights` or the hosted revision, or null
-// where the GPU has no subgroup matrices (onnxruntime then): in the browser
-async function engineSession(opts, p) {
+// where the GPU has no subgroup matrices (onnxruntime then): in the browser. Kept after a separation for KEEP ms, so the
+// next one starts at once (its 466 MB of weights and 2 GB of buffers on the GPU, made in about a second), then let go
+const KEEP = 60_000
+let kept = null
+function engineSession(opts, p) {
+	let name = opts.model, key = `${name}:${opts.weights ?? ''}:${p.engine.sha256}`
+	if (kept?.key === key) { clearTimeout(kept.timer); return kept.session }
+	kept?.session.then(s => s?.drop())
+	let mine = { key, timer: null }
+	// free() after a separation lets go KEEP ms later, unless the next one has taken it
+	mine.session = makeEngine(opts, p, name).then(s => s && {
+		...s, drop: s.free,
+		free() { clearTimeout(mine.timer); mine.timer = setTimeout(() => { if (kept === mine) kept = null; s.free() }, KEEP) },
+	})
+	return (kept = mine).session
+}
+async function makeEngine(opts, p, name) {
 	let { engine, gpu } = await import('./roformer.js'), device = await gpu()
 	if (!device) return null
 	try {
-		let name = opts.model, base = opts.weights != null ? `${await weightsBase(opts, name)}${name}/` : `https://huggingface.co/${p.repo}/resolve/${REVISIONS[name]}/`
+		let base = opts.weights != null ? `${await weightsBase(opts, name)}${name}/` : `https://huggingface.co/${p.repo}/resolve/${REVISIONS[name]}/`
 		let [meta, bytes] = await Promise.all([fetchJson(base + p.engine.meta), checked(base + p.engine.bin, p.engine.sha256)])
 		return await engine(meta, bytes, device)
 	} catch (e) {
 		// its files not there (weights without them), or the GPU refusing its buffers: onnxruntime, as without it
 		device.destroy()
-		console.warn(`neural-separate: ${opts.model}'s own engine stands aside (${e.message})`)
+		console.warn(`neural-separate: ${name}'s own engine stands aside (${e.message})`)
 		return null
 	}
 }
