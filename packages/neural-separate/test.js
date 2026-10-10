@@ -405,6 +405,8 @@ test('models: presets name their contract', () => {
 	is(models.scnet.modelType, 'complex')
 	is(models.mrx.modelType, 'multires')
 	is(models.mrx.targets, ['dialogue', 'music', 'effects'])
+	is(models['mel-roformer'].modelType, 'complex')
+	is(models['mel-roformer'].targets, ['vocals'])
 })
 
 // 'multires' (MRX's contract): a source is the sum over resolutions of the iSTFT of its mask times the spectrogram, so
@@ -496,7 +498,7 @@ test('separate: Node fetches a hosted compact file into the cache once, then rea
 // ------------------------------------------- 10. Real weights vs the Python reference
 
 // the compact files' stems against the reference, dB: measured on reference.py's mix (README, Verification), less a margin
-const COMPACT = { 'scnet-large': 23, scnet: 44, mrx: 42, tiger: 55 }
+const COMPACT = { 'scnet-large': 23, scnet: 44, mrx: 42, tiger: 55, 'mel-roformer': 95 }
 
 const CACHE = process.env.AUDIO_NEURAL_CACHE || path.join(os.homedir(), '.cache', 'audiojs', 'neural')
 
@@ -529,7 +531,10 @@ function reference(name) {
 // 101-134 dB: one chunk (20 s); in 8 s chunks, 12-50 dB (its LSTMs hear the whole input)
 // tiger: upstream's TIGERDNR.wav_chunk_inference, each channel apart, its segments through the graph export-tiger.py
 // verified against the three TIGER.forward (4e-7), matched to 95-140 dB
-for (let [name, minDb] of [['umxhq', 100], ['htdemucs', 70], ['htdemucs_ft', 70], ['scnet-large', 100], ['scnet', 100], ['mrx', 100], ['tiger', 90]]) {
+// mel-roformer: MelBandRoformer.forward on the segments chunked() cuts (step 0.5) of a mix with a noise floor 60 dB
+// down (each band normalizes its input: a silent one's direction is its rounding), through the graph
+// export-roformer.py rearranges for the GPU, on WebGPU where there is one: matched to 89-92 dB
+for (let [name, minDb] of [['umxhq', 100], ['htdemucs', 70], ['htdemucs_ft', 70], ['scnet-large', 100], ['scnet', 100], ['mrx', 100], ['tiger', 90], ['mel-roformer', 85]]) {
 	let ref = reference(name)
 	;(ref ? test : test.skip)(`separate: ${name} matches the Python reference on scripts/reference.py's mix: SNR > ${minDb} dB per stem`, async () => {
 		let { stems } = await separate(ref.mix, { sampleRate: 44100, model: name, weights: models[name].file ? exported(name) : undefined })
@@ -558,7 +563,7 @@ test('separate: a fetched compact file is checked against its SHA-256 before a s
 }, { timeout: 300_000 })
 
 // The compact files (scripts/compact.py at its 40 dB budget: SCNet's five costliest weights float16, the rest of its
-// and MRX's and TIGER's int8) against the Python reference on the same mix, which their exports match to 95 dB and more
+// and MRX's and TIGER's int8; Mel-RoFormer's all float16: 101 dB under the mixture, 42 under its quiet vocals) against the Python reference on the same mix, which their exports match to 95 dB and more
 // (above): each stem's error under the mixture's power (a stem near silence on these tones moves far against its own
 // power: SCNet-large's vocals 11 dB), at least what was measured less a margin
 for (let [name, minDb] of Object.entries(COMPACT)) {

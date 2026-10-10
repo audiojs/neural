@@ -15,12 +15,15 @@
   },
   "files": [
     "separate.js",
+    "roformer.js",
     "index.d.ts",
     "scripts/export-openunmix.py",
     "scripts/export-htdemucs.py",
     "scripts/export-scnet.py",
     "scripts/export-mrx.py",
     "scripts/export-tiger.py",
+    "scripts/export-roformer.py",
+    "scripts/engine.mjs",
     "scripts/reference.py",
     "scripts/compact.py",
     "NOTICE"

@@ -27,7 +27,7 @@
 
 import { fft, ifft } from 'fourier-transform'
 import resampleSinc from '@audio/resample-sinc'
-import { load as neuralLoad, tensor, fetchModel } from '@audio/neural-runtime'
+import { load as neuralLoad, tensor, fetchModel, fetchJson, backends } from '@audio/neural-runtime'
 
 const PI2 = Math.PI * 2
 const isNode = typeof process !== 'undefined' && !!process.versions?.node
@@ -371,6 +371,15 @@ const TIGER = {
 	standardize: false, mono: true, script: 'export-tiger.py',
 }
 
+// Mel-Band RoFormer's STFT (Hann of 2048, hop 441, unnormalized), 8 s segments of 801 frames every 4 s, as
+// Music-Source-Separation-Training's demix() runs Kim's vocals model (num_overlap 2); nothing normalized
+const MEL = {
+	modelType: 'complex', sampleRate: 44100, targets: ['vocals'], sources: ['vocals'], n: 2048, hop: 441, window: 'hann',
+	normalized: false, segment: 352800, frames: 801, step: 0.5, standardize: false, gpu: true, script: 'export-roformer.py',
+	// roformer.js's tensors, for a browser whose GPU has subgroup matrices: the engine runs in onnxruntime's place
+	engine: { meta: 'mel-roformer.engine.json', bin: 'mel-roformer.engine.bin', sha256: '140fedcd9d03a8f918b235688c69f4dfdd86b08f9d430277659c095688a026ff' },
+}
+
 // The compact files (scripts/compact.py: int8 weights, a few float16, float32 compute), each within 0.05 dB of its
 // export's median SDR or SNR per stem (README, Size); their Hugging Face repositories, and SHA-256 checked when fetched
 const FILES = {
@@ -378,6 +387,8 @@ const FILES = {
 	scnet: { file: 'scnet.int8.onnx', repo: 'audiojs/scnet', sha256: '98228931494151762a1c4ab1ec7899a894b1f81fd4a509921a9d2f9bacc50845' },
 	mrx: { file: 'mrx.int8.onnx', repo: 'audiojs/mrx', sha256: 'd876c92d224f5d8cd2207d528b23369da895a6de71fb24132416fcb16f9f8424' },
 	tiger: { file: 'tiger.int8.onnx', repo: 'audiojs/tiger-dnr', sha256: '2189859ac7e89cf4d9d284c6f393e737aaa2b3233ed7ee424ad622012bce7bca' },
+	// float16 weights, float32 compute: half the download; int8 (259 MB) ran slower on WebGPU and 10 dB further from float32
+	'mel-roformer': { file: 'mel-roformer.fp16.onnx', repo: 'audiojs/mel-roformer', sha256: 'adcbbb826f12453fbb86652b503242d565a9c81cdef1bca2fe0e54752eba91ef' },
 }
 
 // The hosted revision of each compact file's repository (a commit), its URL https://huggingface.co/<repo>/resolve/<revision>/
@@ -388,6 +399,7 @@ export const REVISIONS = {
 	scnet: 'e71bcdb42bce1d62b7fae25ba90fcbcf90f73f46',
 	mrx: 'dedc823a0bea2ed085d19e8b7f32589d35169ee8',
 	tiger: '1c959ab7ff8794dc5663b104ba301687ab95d2ab',
+	'mel-roformer': 'c1aba02c00a0bee852d6754fe6ede8164f90a4b3',
 }
 
 const hosted = name => models[name].repo && REVISIONS[name] ? `https://huggingface.co/${models[name].repo}/resolve/${REVISIONS[name]}/${models[name].file}` : null
@@ -406,6 +418,8 @@ export const models = {
 	mrx: { ...MRX, ...FILES.mrx },
 	// TIGER (JusperLee/TIGER, Apache-2.0 weights): the same three stems, three band-split models, about 50 times MRX's time
 	tiger: { ...TIGER, ...FILES.tiger },
+	// Mel-Band RoFormer (Kimberley Jensen's vocals model, MIT weights) as scripts/export-roformer.py exports it for the GPU
+	'mel-roformer': { ...MEL, ...FILES['mel-roformer'] },
 }
 
 async function cacheDir() {
@@ -450,6 +464,23 @@ async function local(graphs, name, opts) {
 		`Produce them with python3 node_modules/@audio/neural-separate/scripts/${script} --model ${name}` +
 		(p.file ? ` (and scripts/compact.py --model ${name} for ${p.file})` : '') +
 		`, or pass opts.weights: a URL or directory holding ${name}/<file>.onnx`)
+}
+
+// A preset's own WebGPU engine (roformer.js) as a session, its tensors from `weights` or the hosted revision, or null
+// where the GPU has no subgroup matrices (onnxruntime then): in the browser
+async function engineSession(opts, p) {
+	let { engine, gpu } = await import('./roformer.js'), device = await gpu()
+	if (!device) return null
+	try {
+		let name = opts.model, base = opts.weights != null ? `${await weightsBase(opts, name)}${name}/` : `https://huggingface.co/${p.repo}/resolve/${REVISIONS[name]}/`
+		let [meta, bytes] = await Promise.all([fetchJson(base + p.engine.meta), checked(base + p.engine.bin, p.engine.sha256)])
+		return await engine(meta, bytes, device)
+	} catch (e) {
+		// its files not there (weights without them), or the GPU refusing its buffers: onnxruntime, as without it
+		device.destroy()
+		console.warn(`neural-separate: ${opts.model}'s own engine stands aside (${e.message})`)
+		return null
+	}
 }
 
 // The hosted compact file into the cache, checked against its SHA-256, written whole or not at all → its file URL
@@ -503,12 +534,18 @@ async function resolveModel(opts) {
 // No pooled arena: one htdemucs segment peaks at 2.7 GB RSS in onnxruntime-node instead of 3.2 GB.
 const sessionOptions = { enableCpuMemArena: false, enableMemPattern: false }
 
-// A graph's session; a fetched file with a SHA-256 checked against it first
-function loader(opts) {
+// A graph's session; a fetched file with a SHA-256 checked against it first. A preset written for the GPU (`gpu`) runs
+// on WebGPU where there is one (onnxruntime-web's in a browser, onnxruntime-node's in Node) unless `device` says
+// otherwise: SCNet's LSTMs and the others' many small operators run no faster there
+function loader(opts, preset) {
+	let device = opts.device ?? (preset?.gpu ? backends().then(b => b.includes('webgpu') ? 'webgpu' : undefined) : undefined)
+	let own = !opts.device && !opts.session && preset?.engine && !isNode ? engineSession(opts, preset) : null
 	return async g => {
 		if (opts.session) return opts.session(g.spec, opts)
+		let s = own && await own
+		if (s) return s
 		let spec = g.sha256 && !g.spec.startsWith('file:') ? await checked(g.spec, g.sha256) : g.spec
-		return neuralLoad(spec, { backend: opts.device, sessionOptions })
+		return neuralLoad(spec, { backend: await device, sessionOptions })
 	}
 }
 
@@ -959,7 +996,7 @@ export default async function separate(audio, opts = {}) {
 	if (!channelData[0].length) return { stems: Object.fromEntries(targets.map(t => [t, empty()])), sampleRate: rate, residual: empty() }
 	let targetRate = opts.targetRate ?? modelRate ?? rate
 	let proc = targetRate !== rate ? channelData.map(c => resampleSinc(c, { from: rate, to: targetRate })) : channelData
-	let load = loader(opts)
+	let load = loader(opts, preset)
 	// the input at the loudness the model trained at, its stems scaled back (a silent input as it is)
 	let level = preset?.loudness == null ? -Infinity : lufs(proc, targetRate), gain = Number.isFinite(level) ? 10 ** ((preset.loudness - level) / 20) : 1
 	if (gain !== 1) proc = proc.map(c => c.map(v => v * gain))

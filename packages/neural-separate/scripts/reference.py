@@ -64,9 +64,12 @@ def chunked(mix, run, L, step=0.25):
     return out[..., border:border + N] if wide else out
 
 
-def write(out_dir, separate, seconds=9.0):
-    """separate(mix (2, N) float32) -> { target: (2, N) array }"""
+def write(out_dir, separate, seconds=9.0, floor=0.0):
+    """separate(mix (2, N) float32) -> { target: (2, N) array }. `floor`: white noise of that RMS under the mix, so no
+    band of it is silent (a model that normalizes each band's input turns a silent band's rounding into its direction)"""
     mix = test_mix(seconds)
+    if floor:
+        mix = (mix + floor * np.random.RandomState(1).randn(*mix.shape)).astype(np.float32)
     mix.tofile(out_dir / "test.f32")
     for name, x in separate(mix).items():
         np.asarray(x, dtype=np.float32).tofile(out_dir / f"test.{name}.f32")
