@@ -1,6 +1,6 @@
 /** ONNX inference adapter — one interface over onnxruntime-node and onnxruntime-web. */
 
-export type Backend = 'auto' | 'node' | 'wasm' | 'webgpu' | 'webgl'
+export type Backend = 'auto' | 'node' | 'wasm' | 'webgpu' | 'webgl' | 'coreml'
 
 export type TensorType = 'float32' | 'int32' | 'int64' | 'uint8' | 'bool' | 'string'
 
@@ -63,7 +63,7 @@ export function load(model: string | Uint8Array | ArrayBuffer, opts?: LoadOption
 /** Build a plain tensor; infers `type` from `data`'s constructor when omitted (Float32Array → 'float32', Int32Array → 'int32', BigInt64Array → 'int64', Uint8Array → 'uint8', string[] → 'string'). */
 export function tensor(data: Tensor['data'], dims: number[], type?: TensorType): Tensor
 
-/** Backends this environment can run: Node → ['node']; browser → ['wasm'] (+ 'webgpu' when navigator.gpu exists). */
+/** Backends this environment can run: Node → ['node'] (+ 'webgpu', 'coreml' where onnxruntime-node has them as providers); browser → ['wasm'] (+ 'webgpu' when navigator.gpu gives an adapter that is no fallback). */
 export function backends(): Promise<Backend[]>
 
 /** Cached fetch with progress. Also the primitive fetchJson uses for tokenizer/config siblings. */

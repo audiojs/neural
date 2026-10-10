@@ -12,7 +12,7 @@ export type AudioInput = Float32Array[] | { channelData: Float32Array[]; sampleR
 export type ModelSpec = string | Uint8Array
 
 /** Presets whose files the export scripts write: <weights>/<name>/<target>.onnx or <weights>/<name>/<name>.onnx */
-export type ModelName = 'umxhq' | 'htdemucs' | 'htdemucs_ft' | 'scnet-large' | 'scnet' | 'mrx' | 'tiger'
+export type ModelName = 'umxhq' | 'htdemucs' | 'htdemucs_ft' | 'scnet-large' | 'scnet' | 'mrx' | 'tiger' | 'mel-roformer'
 
 /** One graph whose output stacks several sources on its S axis */
 export type MultiGraph = { url: ModelSpec; targets: string[] }
@@ -74,7 +74,7 @@ export interface ModelPreset {
 export const models: Record<ModelName, ModelPreset>
 
 /** The hosted revision (commit) of each compact preset's repository: https://huggingface.co/<repo>/resolve/<revision>/<file> is read without opts.weights in the browser, and in Node when the cache holds neither the file nor its export. Empty: not hosted. */
-export const REVISIONS: Record<'scnet-large' | 'scnet' | 'mrx' | 'tiger', string>
+export const REVISIONS: Record<'scnet-large' | 'scnet' | 'mrx' | 'tiger' | 'mel-roformer', string>
 
 /** A neural-runtime-shaped session — enough of it to drive separate() with a test double. */
 export interface Session {

@@ -1,6 +1,6 @@
 {
   "name": "@audio/neural-runtime",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Model inference adapter — ONNX Runtime (Node/wasm/webgpu) behind one worklet-ready interface",
   "type": "module",
   "sideEffects": false,
