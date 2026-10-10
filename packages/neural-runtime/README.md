@@ -26,10 +26,11 @@ session.free()
 | `'auto'` (default) | picks `'node'` in Node, `'wasm'` in a browser/worker/worklet | either |
 | `'node'` | `onnxruntime-node` | Node only |
 | `'wasm'` | `onnxruntime-web` | browser/worker/worklet only |
-| `'webgpu'` | `onnxruntime-web/webgpu` | browser/worker/worklet only |
+| `'webgpu'` | `onnxruntime-web/webgpu`; in Node, `onnxruntime-node`'s WebGPU provider (Dawn) | browser/worker/worklet; Node |
+| `'coreml'` | `onnxruntime-node`'s CoreML provider | Node on macOS |
 | `'webgl'` | `onnxruntime-web` | browser/worker/worklet only |
 
-Neither `onnxruntime-node` nor `onnxruntime-web` is a hard dependency — both are optional peers (`peerDependenciesMeta.optional`), resolved by dynamic `import()` the first time a backend is used and memoized after. Asking for a backend your environment can't run (`'webgpu'` in Node, `'node'` in a browser) throws immediately, naming what's missing and where it does work; a resolvable but uninstalled package throws naming the install command. `backends()` reports what's actually usable here: `['node']` in Node, `['wasm']` or `['wasm', 'webgpu']` (when `navigator.gpu` exists) in a browser.
+Neither `onnxruntime-node` nor `onnxruntime-web` is a hard dependency — both are optional peers (`peerDependenciesMeta.optional`), resolved by dynamic `import()` the first time a backend is used and memoized after. Asking for a backend your environment can't run (`'wasm'` in Node, `'node'` in a browser) throws immediately, naming what's missing and where it does work; a resolvable but uninstalled package throws naming the install command. `backends()` reports what's actually usable here: `['node']` in Node, with `'webgpu'` and `'coreml'` where its onnxruntime-node has them, `['wasm']` or `['wasm', 'webgpu']` (when `navigator.gpu` gives an adapter that is no fallback, not SwiftShader) in a browser.
 
 `run()` queues concurrent calls onto one sequential chain per session — safe regardless of whether the underlying ORT build tolerates overlapping `run()` calls. `free()` maps to `session.release()`, is idempotent, and `run()` after `free()` throws.
 

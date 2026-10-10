@@ -21,11 +21,16 @@ function resolveBackend(want) {
   return want
 }
 
+// Node's onnxruntime-node runs the GPU as execution providers of its own (1.30: WebGPU through Dawn, on Metal here;
+// CoreML on macOS): backend 'webgpu' or 'coreml' in Node is onnxruntime-node with that provider
+const NODE_EPS = new Set(['webgpu', 'coreml'])
+const runtimeOf = backend => isNode && NODE_EPS.has(backend) ? 'node' : backend
+
 const ortCache = new Map()
 
 function getOrt(backend) {
   if (isNode && backend !== 'node')
-    throw new Error(`neural-runtime: backend '${backend}' needs a browser (onnxruntime-web) — Node only runs backend 'node' (onnxruntime-node)`)
+    throw new Error(`neural-runtime: backend '${backend}' needs a browser (onnxruntime-web) — Node runs backend 'node' (onnxruntime-node), and 'webgpu' and 'coreml' as its providers`)
   if (!isNode && backend === 'node')
     throw new Error(`neural-runtime: backend 'node' needs Node.js (onnxruntime-node) — in a browser use 'wasm' or 'webgpu' (onnxruntime-web)`)
   let spec = ORT_SPEC[backend]
@@ -87,9 +92,13 @@ function ioMeta(session, kind) {
 
 // backends() → what onnx runtime this environment can actually use.
 export async function backends() {
-  if (isNode) return ['node']
-  let list = ['wasm']
-  if (typeof navigator !== 'undefined' && navigator.gpu) list.push('webgpu')
+  if (isNode) {
+    let ort = await getOrt('node').catch(() => null), have = new Set((ort?.listSupportedBackends?.() ?? []).map(b => b.name))
+    return ['node', ...[...NODE_EPS].filter(b => have.has(b))]
+  }
+  // a GPU adapter, not a fallback one (Chromium's SwiftShader, WebGPU on the CPU, slower than wasm)
+  let list = ['wasm'], adapter = typeof navigator !== 'undefined' && await navigator.gpu?.requestAdapter().catch(() => null)
+  if (adapter && !adapter.info?.isFallbackAdapter && adapter.info?.architecture !== 'swiftshader') list.push('webgpu')
   return list
 }
 
@@ -103,8 +112,8 @@ async function resolveBytes(model, opts) {
 // load(model, opts) → Session. model: URL string | Uint8Array | ArrayBuffer.
 export async function load(model, opts = {}) {
   let bytes = await resolveBytes(model, opts)
-  let backend = resolveBackend(opts.backend)
-  let ort = await getOrt(backend)
+  let backend = resolveBackend(opts.backend), runtime = runtimeOf(backend)
+  let ort = await getOrt(runtime)
 
   if (opts.wasmPaths !== undefined && ort.env?.wasm) ort.env.wasm.wasmPaths = opts.wasmPaths
   if (opts.threads !== undefined && ort.env?.wasm) ort.env.wasm.numThreads = opts.threads
@@ -113,7 +122,7 @@ export async function load(model, opts = {}) {
   // any other ort.InferenceSession.SessionOptions pass through (e.g. enableCpuMemArena: false,
   // which gives activation memory back after each run instead of keeping it pooled)
   let sessionOpts = { ...opts.sessionOptions }
-  let eps = opts.executionProviders ?? (backend === 'node' ? undefined : [backend])
+  let eps = opts.executionProviders ?? (backend === 'node' ? undefined : [backend])  // in Node, 'webgpu' a provider of onnxruntime-node
   if (eps) sessionOpts.executionProviders = eps
   if (opts.graphOptimizationLevel) sessionOpts.graphOptimizationLevel = opts.graphOptimizationLevel
 
@@ -235,7 +244,9 @@ async function fetchBrowser(url, { cache, progress, fetch: f }) {
   }
   let res = await f(url)
   if (!res.ok) throw new Error(`neural-runtime: fetch failed for ${url}: ${res.status} ${res.statusText}`)
-  if (store) await store.put(url, res.clone())
+  // kept beside the read, not before it: a store that can't take it (a private window's quota, a 464 MB model) leaves
+  // the model loaded, fetched again next time
+  store?.put(url, res.clone()).catch(e => console.warn(`neural-runtime: ${url} not cached (${e.message})`))
   let total = Number(res.headers.get('content-length')) || null
   return readResponseBody(res, loaded => progress?.({ loaded, total }))
 }

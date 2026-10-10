@@ -118,8 +118,15 @@ test('load — bad model bytes rejects with a clear message', async () => {
   await rejects(() => load(new Uint8Array([1, 2, 3, 4, 5])), /neural-runtime: failed to load model/)
 })
 
-test("load — backend 'webgpu' in Node rejects naming the requirement", async () => {
-  await rejects(() => load(LINEAR, { backend: 'webgpu' }), /onnxruntime-web/)
+// In Node, 'webgpu' is onnxruntime-node's WebGPU provider (Dawn): the same answer as the CPU's; 'wasm' a browser's alone
+test("load — backend 'webgpu' in Node runs onnxruntime-node's WebGPU provider; 'wasm' rejects naming the requirement", async t => {
+  if (!(await backends()).includes('webgpu')) return t?.skip?.('no WebGPU provider in this onnxruntime-node')
+  let cpu = await load(SCALE), gpu = await load(SCALE, { backend: 'webgpu' })
+  is(gpu.backend, 'webgpu')
+  let x = tensor(Float32Array.from([1, 2, 3]), [3])
+  is([...(await gpu.run({ x })).y.data], [...(await cpu.run({ x })).y.data])
+  cpu.free(); gpu.free()
+  await rejects(() => load(LINEAR, { backend: 'wasm' }), /onnxruntime-web/)
 })
 
 test('free — idempotent; run() after free() throws', async () => {
@@ -147,6 +154,8 @@ test('tensor — infers type from data constructor, throws when ambiguous', () =
   throws(() => tensor(Float32Array.from([1]), undefined), undefined, 'dims required')
 })
 
-test('backends — Node reports only \'node\'', async () => {
-  is(await backends(), ['node'])
+test('backends — Node reports \'node\', and the GPU providers onnxruntime-node has', async () => {
+  let b = await backends()
+  is(b[0], 'node')
+  ok(b.slice(1).every(x => x === 'webgpu' || x === 'coreml'), b.join())
 })
