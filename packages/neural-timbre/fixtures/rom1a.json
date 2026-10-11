@@ -1,0 +1,172 @@
+{
+	"cartridge": "ROM1A",
+	"note": {
+		"midi": 65,
+		"velocity": 90,
+		"duration": 0.8,
+		"release": 0.8
+	},
+	"featuresSha256": "411d90fb4e19cf635c37c22cfc123aedd78bee0ec791c151eaa47bf1b6fd20fa",
+	"voices": [
+		{
+			"index": 1,
+			"name": "BRASS   1",
+			"id": "33dec75e85e968cd"
+		},
+		{
+			"index": 2,
+			"name": "BRASS   2",
+			"id": "ae2be655e13b00d9"
+		},
+		{
+			"index": 3,
+			"name": "BRASS   3",
+			"id": "59601f6cee320adb"
+		},
+		{
+			"index": 4,
+			"name": "STRINGS 1",
+			"id": "87e1fcd19f98c826"
+		},
+		{
+			"index": 5,
+			"name": "STRINGS 2",
+			"id": "a5f660dcac474fa3"
+		},
+		{
+			"index": 6,
+			"name": "STRINGS 3",
+			"id": "a50c902ef564be3a"
+		},
+		{
+			"index": 7,
+			"name": "ORCHESTRA",
+			"id": "3d84f5334db642ef"
+		},
+		{
+			"index": 8,
+			"name": "PIANO   1",
+			"id": "a6ad3d3141723f77"
+		},
+		{
+			"index": 9,
+			"name": "PIANO   2",
+			"id": "9869935d94cccdac"
+		},
+		{
+			"index": 10,
+			"name": "PIANO   3",
+			"id": "fdaabb2a294a3f82"
+		},
+		{
+			"index": 11,
+			"name": "E.PIANO 1",
+			"id": "6d278846601fe62d"
+		},
+		{
+			"index": 12,
+			"name": "GUITAR  1",
+			"id": "1d301516ae22d79e"
+		},
+		{
+			"index": 13,
+			"name": "GUITAR  2",
+			"id": "160dce5ec630f6f8"
+		},
+		{
+			"index": 14,
+			"name": "SYN-LEAD 1",
+			"id": "9d213a1c89541dfa"
+		},
+		{
+			"index": 15,
+			"name": "BASS    1",
+			"id": "c756426f425ef1b1"
+		},
+		{
+			"index": 16,
+			"name": "BASS    2",
+			"id": "8fa6733dc7b5cccb"
+		},
+		{
+			"index": 17,
+			"name": "E.ORGAN 1",
+			"id": "d908601a58b6f4dd"
+		},
+		{
+			"index": 18,
+			"name": "PIPES   1",
+			"id": "7a6a1d1afde6156f"
+		},
+		{
+			"index": 19,
+			"name": "HARPSICH 1",
+			"id": "511b9b4dd7bc506f"
+		},
+		{
+			"index": 20,
+			"name": "CLAV    1",
+			"id": "0abec5392dd9bbac"
+		},
+		{
+			"index": 21,
+			"name": "VIBE    1",
+			"id": "7467ebd55244e353"
+		},
+		{
+			"index": 22,
+			"name": "MARIMBA",
+			"id": "f68d9c1312b31089"
+		},
+		{
+			"index": 23,
+			"name": "KOTO",
+			"id": "1ed8d58a6f97387a"
+		},
+		{
+			"index": 24,
+			"name": "FLUTE   1",
+			"id": "531858245026aa05"
+		},
+		{
+			"index": 25,
+			"name": "ORCH-CHIME",
+			"id": "0f3b509bafa964e2"
+		},
+		{
+			"index": 26,
+			"name": "TUB BELLS",
+			"id": "12ae6934288acc64"
+		},
+		{
+			"index": 27,
+			"name": "STEEL DRUM",
+			"id": "c1430504877060a4"
+		},
+		{
+			"index": 28,
+			"name": "TIMPANI",
+			"id": "be964fbd282c45c3"
+		},
+		{
+			"index": 29,
+			"name": "REFS WHISL",
+			"id": "9259b4352e780428"
+		},
+		{
+			"index": 30,
+			"name": "VOICE   1",
+			"id": "b888d4c2bb475d70"
+		},
+		{
+			"index": 31,
+			"name": "TRAIN",
+			"id": "dd1f723d0c7eb2b7"
+		},
+		{
+			"index": 32,
+			"name": "TAKE OFF",
+			"id": "f9686e9dd92fc3c1"
+		}
+	]
+}

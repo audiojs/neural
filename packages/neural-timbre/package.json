@@ -1,0 +1,61 @@
+{
+  "name": "@audio/neural-timbre",
+  "version": "0.1.0",
+  "description": "Timbre recognition: a small encoder maps one note to a vector, a catalog of preset vectors names the sound (Yamaha DX7 first), ranked by cosine through @audio/neural-runtime",
+  "type": "module",
+  "sideEffects": false,
+  "main": "timbre.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./timbre.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "timbre.js",
+    "features.js",
+    "index.d.ts",
+    "scripts/*.js",
+    "scripts/*.py"
+  ],
+  "dependencies": {
+    "@audio/neural-runtime": "^0.1.0",
+    "@audio/resample-sinc": "^1.1.2",
+    "fourier-transform": "^2.4.1"
+  },
+  "devDependencies": {
+    "onnxruntime-node": "^1.29.0",
+    "tst": "^9.4.0"
+  },
+  "scripts": {
+    "test": "node test.js"
+  },
+  "keywords": [
+    "audio",
+    "ml",
+    "neural",
+    "timbre",
+    "synth",
+    "preset",
+    "dx7",
+    "retrieval",
+    "contrastive",
+    "onnx"
+  ],
+  "license": "MIT",
+  "author": "Dmitry Iv. <dfcreative@gmail.com>",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/audiojs/neural.git",
+    "directory": "packages/neural-timbre"
+  },
+  "funding": "https://github.com/sponsors/audiojs",
+  "publishConfig": {
+    "access": "public"
+  }
+}
