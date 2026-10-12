@@ -48,6 +48,9 @@ export default function denoise<T extends Audio>(audio: T, opts?: DenoiseOptions
 /** The input x mixed back into a model's output y, y + a·(x − y): the noise drops by `limit` dB (default 18), or to `floor` dB under the voice (default 40) where it stands higher, per 10 ms frame; `limit` 0: y; `floor` 0: a constant 10^(−limit/20). denoise() applies it to DeepFilterNet3. */
 export function mixback(x: Float32Array, y: Float32Array, opts?: { limit?: number, floor?: number, sampleRate?: number }): Float32Array
 
+/** Per sample of x, the gain an enhancement of it takes: 1 where it is speech or noise, 0 where it is music (inaSpeechSegmenter's segments over the whole input, as denoise() decides), ramped over 200 ms; blend g·y + (1 − g)·x. */
+export function guard(x: Float32Array, sampleRate?: number): Promise<Float32Array>
+
 /** Load a model once to reuse it across denoise() calls. */
 export function load(model?: 'rnnoise' | 'deepfilternet3', opts?: LoadOptions): Promise<Model>
 

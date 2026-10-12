@@ -103,6 +103,18 @@ export function mixback(x, y, { limit = DFN_LIMIT, floor = FLOOR, sampleRate = R
 	return out
 }
 
+/**
+ * guard(x, sampleRate) → per sample of x, the gain an enhancement of it takes: 1 where it is speech or noise, 0 where it
+ * is music, ramped over RAMP at 48 kHz (200 ms) centered on each change: ina's segments over the whole input, as
+ * denoise() decides for DeepFilterNet3 (guard.js offline()). Blended g·y + (1 − g)·x, a model's output y passes music
+ * untouched; a host guards any enhancement so (audio's dereverb).
+ */
+export async function guard(x, sampleRate = RATE) {
+	let nn = await guardNet(), x48 = sampleRate === RATE ? x : resample(Float32Array.from(x), { from: sampleRate, to: RATE })
+	let g = gains(offline(x48, nn), x48.length, true)
+	return sampleRate === RATE ? g : fit(resample(g, { from: RATE, to: sampleRate }), x.length)
+}
+
 // the enhanced y where the gain g (at 48 kHz) is 1, the input x where it is 0: music passes untouched
 function mix(y, x, g, rate) {
 	if (rate !== RATE) g = fit(resample(g, { from: RATE, to: rate }), x.length)

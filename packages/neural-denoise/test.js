@@ -11,7 +11,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
-import denoise, { load, weights, rnnoise, mixback, FRAME, MODEL } from './denoise.js'
+import denoise, { load, weights, rnnoise, mixback, guard, FRAME, MODEL } from './denoise.js'
 import { model } from './rnnoise.js'
 import { loadDeepFilter, enhance, erbWidths, voicing, bandEdge, LEVEL, FILL, FLOOR } from './deepfilter.js'
 import { rfft, irfft, WINDOW, N, HOP, BINS } from './fft.js'
@@ -441,6 +441,17 @@ test('guard: segments switch where the material does, the gain over a 200 ms rai
 	ok(step <= Math.PI / 2 / RAMP * 1.001, `no jump: at most ${step.toExponential(2)} per sample, π/2 over ${RAMP}`)
 	ok(Math.abs(g[Math.round(edges[0] * 48000)] - .5) < 1e-3, 'each ramp centered on its switch')
 	ok(g.subarray(0, (edges[0] - .2) * 48000).every(v => v === 0) && g.subarray((edges[0] + .2) * 48000, (edges[1] - .2) * 48000).every(v => v === 1), 'exactly 0 and exactly 1 between the ramps')
+})
+
+test('guard(): the offline gain at the input\'s rate, for any enhancement: 0 over music, the 48 kHz gain itself at 48 kHz', async () => {
+	let nn = await guardNet()
+	for (let sr of [48000, 44100]) {
+		let x = band(4, sr), g = await guard(x, sr)
+		is(g.length, x.length, `${sr} Hz: a gain per sample`)
+		ok(g.every(v => v === 0), `${sr} Hz: the band passes whole`)
+	}
+	let x = band(2), g = await guard(x, 48000)
+	is(maxDiff(g, gains(offline(x, nn), x.length, true)), 0, 'at 48 kHz: gains(offline(x)) as denoise() takes it')
 })
 
 test('guard: the stream decides from what has arrived: RNNoise\'s output to frame f − 2 stays the same whatever follows frame f', async () => {
