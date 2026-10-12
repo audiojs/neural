@@ -1,6 +1,6 @@
 {
   "name": "@audio/neural-pitch",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Monophonic pitch posterior and voicing from a small transposition-equivariant network with MIT weights, in plain JavaScript; a stage 1 for @audio/pitch-pyin's HMM and note model",
   "type": "module",
   "sideEffects": false,
