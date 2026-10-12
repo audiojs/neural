@@ -407,6 +407,9 @@ test('models: presets name their contract', () => {
 	is(models.mrx.targets, ['dialogue', 'music', 'effects'])
 	is(models['mel-roformer'].modelType, 'complex')
 	is(models['mel-roformer'].targets, ['vocals'])
+	is(models['dereverb-room'].modelType, 'complex')
+	is(models['dereverb-room'].targets, ['dry'])
+	ok(models['dereverb-room'].mono, 'dereverb-room hears each channel apart')
 })
 
 // 'multires' (MRX's contract): a source is the sum over resolutions of the iSTFT of its mask times the spectrogram, so
@@ -498,7 +501,7 @@ test('separate: Node fetches a hosted compact file into the cache once, then rea
 // ------------------------------------------- 10. Real weights vs the Python reference
 
 // the compact files' stems against the reference, dB: measured on reference.py's mix (README, Verification), less a margin
-const COMPACT = { 'scnet-large': 23, scnet: 44, mrx: 42, tiger: 55, 'mel-roformer': 95 }
+const COMPACT = { 'scnet-large': 23, scnet: 44, mrx: 42, tiger: 55, 'mel-roformer': 95, 'dereverb-room': 65 }
 
 const CACHE = process.env.AUDIO_NEURAL_CACHE || path.join(os.homedir(), '.cache', 'audiojs', 'neural')
 
@@ -534,7 +537,8 @@ function reference(name) {
 // mel-roformer: MelBandRoformer.forward on the segments chunked() cuts (step 0.5) of a mix with a noise floor 60 dB
 // down (each band normalizes its input: a silent one's direction is its rounding), through the graph
 // export-roformer.py rearranges for the GPU, on WebGPU where there is one: matched to 89-92 dB
-for (let [name, minDb] of [['umxhq', 100], ['htdemucs', 70], ['htdemucs_ft', 70], ['scnet-large', 100], ['scnet', 100], ['mrx', 100], ['tiger', 90], ['mel-roformer', 85]]) {
+// dereverb-room: BSRoformer.forward on the same segments, each channel apart, through the same rearrangement: 123 dB
+for (let [name, minDb] of [['umxhq', 100], ['htdemucs', 70], ['htdemucs_ft', 70], ['scnet-large', 100], ['scnet', 100], ['mrx', 100], ['tiger', 90], ['mel-roformer', 85], ['dereverb-room', 110]]) {
 	let ref = reference(name)
 	;(ref ? test : test.skip)(`separate: ${name} matches the Python reference on scripts/reference.py's mix: SNR > ${minDb} dB per stem`, async () => {
 		let { stems } = await separate(ref.mix, { sampleRate: 44100, model: name, weights: models[name].file ? exported(name) : undefined })

@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
 """Export Mel-Band RoFormer (Wang, Lu, Won, Chen, Song, "Mel-Band RoFormer for Music Source Separation", ISMIR LBD
-2023) to the ONNX contract @audio/neural-separate expects for modelType 'complex': the network between its STFT and
+2023) and Band-Split RoFormer (Lu, Wang, Kong, Hung, "Music Source Separation with Band-Split RoPE Transformer", ICASSP
+2024) to the ONNX contract @audio/neural-separate expects for modelType 'complex': the network between its STFT and
 iSTFT, which JS computes, written for the GPU.
 
     pip install torch onnx onnxruntime pyyaml einops beartype rotary-embedding-torch librosa
     python3 export-roformer.py --model mel-roformer --verify
+    python3 export-roformer.py --model dereverb-room --verify --fp16
 
-The model is Kimberley Jensen's vocals Mel-Band RoFormer (huggingface.co/KimberleyJSN/melbandroformer, MIT), with the
-config ZFTurbo/Music-Source-Separation-Training (MIT) runs it by (configs/KimberleyJensen/
-config_vocals_mel_band_roformer_kj.yaml) and that repository's models/bs_roformer code, both at a pinned commit.
+The models, each run by ZFTurbo/Music-Source-Separation-Training's (MIT) models/bs_roformer code at a pinned commit:
+  mel-roformer    Kimberley Jensen's vocals Mel-Band RoFormer (huggingface.co/KimberleyJSN/melbandroformer, MIT), with
+                  the config that repository runs it by (configs/KimberleyJensen/config_vocals_mel_band_roformer_kj.yaml)
+  dereverb-room   anvuew's room de-reverb, a mono BS-RoFormer (huggingface.co/anvuew/dereverb_room, GPL-3.0): a voice
+                  in a room in, the voice dry out; trained on voices in rooms pyroomacoustics simulated (its card); its
+                  own config, dim 128, depth 16, 63 bands, 29.4 M parameters
+Each checkpoint and config at a pinned revision, the checkpoint checked by its SHA-256. What follows is told of
+mel-roformer; dereverb-room is one channel, 8.7 s segments (384000 samples, hop 512, 751 frames), its bands contiguous
+(each frequency in one band, so its masks are taken as they come) and one RMSNorm after its transformers, not one each.
 
 One 8 s segment (352800 samples at 44.1 kHz, 801 frames) per run:
   input    mix_spec    [1, 4, 1025, 801]     STFT, complex as channels (L re, L im, R re, R im)
@@ -45,12 +53,16 @@ import urllib.request
 from pathlib import Path
 
 REPO = "https://raw.githubusercontent.com/ZFTurbo/Music-Source-Separation-Training/84b1eac0887756b4f1a9d7a1ff49105939749ed2/"
-MODELS = {  # checkpoint URL, its SHA-256, config path in REPO
+MODELS = {  # checkpoint URL, its SHA-256, config (a path in REPO or a URL), class, segment (samples), the stem's name
     "mel-roformer": ("https://huggingface.co/KimberleyJSN/melbandroformer/resolve/ac9b0614ab3cd7f77219e18ba494dfd93956c348/MelBandRoformer.ckpt",
                      "87201f4d31afb5bc79993230fc49446918425574db48c01c405e44f365c7559e",
-                     "configs/KimberleyJensen/config_vocals_mel_band_roformer_kj.yaml"),
+                     "configs/KimberleyJensen/config_vocals_mel_band_roformer_kj.yaml", "MelBandRoformer", 352800, "vocals"),
+    "dereverb-room": ("https://huggingface.co/anvuew/dereverb_room/resolve/0b85f5b80b7f779b2dfe80f33a1b35b38af9376d/dereverb_room_anvuew_sdr_13.7432.ckpt",
+                      "2edec521f09e26341c1923dc82c8c52dbc86478b42b9999f679535743c970cb3",
+                      "https://huggingface.co/anvuew/dereverb_room/resolve/0b85f5b80b7f779b2dfe80f33a1b35b38af9376d/dereverb_room_anvuew.yaml",
+                      "BSRoformer", 384000, "dry"),
 }
-SEGMENT = 352800
+SEGMENT = 352800  # the model's, set by main()
 STEP = 0.5
 
 
@@ -63,7 +75,7 @@ def fetch(url, path):
 
 
 def load(src, name="mel-roformer"):
-    """MelBandRoformer with its weights: the model code, config and checkpoint fetched into `src` once."""
+    """The model with its weights: the model code, config and checkpoint fetched into `src` once."""
     import hashlib
     import torch
     import yaml
@@ -72,16 +84,17 @@ def load(src, name="mel-roformer"):
     pkg.mkdir(parents=True, exist_ok=True)
     (pkg.parent / "__init__.py").touch()
     (pkg / "__init__.py").touch()
-    for f in ("mel_band_roformer.py", "attend.py"):
+    for f in ("mel_band_roformer.py", "bs_roformer.py", "attend.py"):
         fetch(REPO + "models/bs_roformer/" + f, pkg / f)
     sys.path.insert(0, str(src / "roformer_code"))
     sys.dont_write_bytecode = True
     from models.bs_roformer.mel_band_roformer import MelBandRoformer
+    from models.bs_roformer.bs_roformer import BSRoformer
 
     class Loader(yaml.SafeLoader): pass  # the config's resolutions are a !!python/tuple
     Loader.add_constructor("tag:yaml.org,2002:python/tuple", lambda l, n: tuple(l.construct_sequence(n)))
-    url, sha, config = MODELS[name]
-    cfg = yaml.load(fetch(REPO + config, src / Path(config).name).read_text(), Loader=Loader)
+    url, sha, config, cls, _, _ = MODELS[name]
+    cfg = yaml.load(fetch(config if "://" in config else REPO + config, src / Path(config).name).read_text(), Loader=Loader)
     ckpt = fetch(url, src / Path(url).name)
     h = hashlib.sha256()
     with open(ckpt, "rb") as f:
@@ -89,7 +102,7 @@ def load(src, name="mel-roformer"):
             h.update(b)
     if h.hexdigest() != sha:
         raise SystemExit(f"{ckpt}: SHA-256 {h.hexdigest()}, expected {sha}")
-    model = MelBandRoformer(**cfg["model"])
+    model = {"MelBandRoformer": MelBandRoformer, "BSRoformer": BSRoformer}[cls](**cfg["model"])
     state = torch.load(ckpt, map_location="cpu", weights_only=True)
     model.load_state_dict(state.get("state_dict", state) if isinstance(state, dict) else state)
     return model.eval(), cfg
@@ -114,6 +127,16 @@ def istft(model, y, length):
     return x.reshape(B, -1, model.audio_channels, length)
 
 
+def bands(model):
+    """(frequencies, (f·S + s) of each band's pairs, bands in order, frequencies per band): Mel-Band RoFormer's
+    overlapping mel bands, BS-RoFormer's contiguous ones"""
+    S = model.audio_channels
+    if hasattr(model, "freq_indices"):
+        return model.num_bands_per_freq.numel(), model.freq_indices.tolist(), model.num_freqs_per_band.tolist()
+    nf = [d // (2 * S) for d in model.band_split.dim_inputs]
+    return sum(nf), list(range(sum(nf) * S)), nf
+
+
 def groups(widths, slack=1.3):
     """Contiguous runs of bands whose widest is at most `slack` times their narrowest: [(first, last + 1, widest)]"""
     out, b0 = [], 0
@@ -125,7 +148,7 @@ def groups(widths, slack=1.3):
 
 
 class Core:
-    """MelBandRoformer.forward between its STFT and its iSTFT, for the GPU (the module docstring says how)."""
+    """The model's forward between its STFT and its iSTFT, for the GPU (the module docstring says how)."""
 
     @staticmethod
     def build(model, T):
@@ -134,10 +157,8 @@ class Core:
         import torch.nn.functional as F
 
         f64 = torch.float64
-        Fq = model.num_bands_per_freq.numel()                       # 1025
         S = model.audio_channels
-        fi = model.freq_indices.tolist()                            # (f·S + s) per band's pair, bands in order
-        nf = model.num_freqs_per_band.tolist()
+        Fq, fi, nf = bands(model)
         widths = [2 * n * S for n in nf]                            # a band's input: its (f, s) pairs, re and im
         G = groups(widths)
         lin = torch.matmul
@@ -186,6 +207,9 @@ class Core:
                 s.blocks = nn.ModuleList()
                 for time, freq in model.layers:
                     s.blocks.append(nn.ModuleList([Block(time, T), Block(freq, len(nf))]))
+                # BS-RoFormer's one norm after the transformers (Mel-Band RoFormer's end each transformer)
+                fn = getattr(model, "final_norm", None)
+                s.final = nn.Parameter(rms(fn).float(), requires_grad=False) if fn is not None else None
                 # mask estimator (one stem): its MLP's linear layers before the last batched over bands (their shapes
                 # alike), the last by group, then GLU
                 me = model.mask_estimators[0].to_freqs
@@ -239,6 +263,8 @@ class Core:
                 for time, freq in s.blocks:
                     x = sliced(time, x)                             # sequences over time, one per band
                     x = sliced(freq, x.transpose(0, 1)).transpose(0, 1)  # over bands, one per frame
+                if s.final is not None:
+                    x = x / x.norm(dim=-1, keepdim=True).clamp(min=1e-12) * s.final
                 ms = []
                 for k, (lo, hi, W) in enumerate(G):
                     h = x[lo:hi]
@@ -263,7 +289,7 @@ class Core:
                 s.layers = nn.ModuleList()
                 for attn, ff in tr.layers:
                     s.layers.append(nn.ModuleList([Attn(attn, n), FF(ff)]))
-                s.out = nn.Parameter(rms(tr.norm).float(), requires_grad=False)
+                s.out = None if isinstance(tr.norm, nn.Identity) else nn.Parameter(rms(tr.norm).float(), requires_grad=False)
 
             def biggest(s, n):
                 """bytes of the largest tensor one sequence of n makes"""
@@ -274,7 +300,7 @@ class Core:
                 for attn, ff in s.layers:
                     x = attn(x) + x
                     x = ff(x) + x
-                return x / x.norm(dim=-1, keepdim=True).clamp(min=1e-12) * s.out
+                return x if s.out is None else x / x.norm(dim=-1, keepdim=True).clamp(min=1e-12) * s.out
 
         class Attn(nn.Module):
             def __init__(s, a, n):
@@ -342,7 +368,7 @@ def export(model, path, opset):
     with torch.no_grad():
         torch.onnx.export(core, (spec,), str(path), input_names=["mix_spec"], output_names=["stems_spec"],
                           opset_version=opset, dynamo=False)
-    print(f"wrote {path} ({path.stat().st_size / 1e6:.1f} MB), segment {SEGMENT} samples, spec {list(spec.shape)}, groups {groups([2 * n * model.audio_channels for n in model.num_freqs_per_band.tolist()])}")
+    print(f"wrote {path} ({path.stat().st_size / 1e6:.1f} MB), segment {SEGMENT} samples, spec {list(spec.shape)}, groups {groups([2 * n * model.audio_channels for n in bands(model)[2]])}")
     return core
 
 
@@ -365,7 +391,7 @@ def engine(model, out_dir, name):
         blob += bytes(pad)
         tensors[n] = {"type": kind, "shape": list(a.shape), "offset": len(blob)}
         blob += b
-    nf = model.num_freqs_per_band.tolist()
+    nf = bands(model)[2]
     meta = {
         "model": name, "frames": T, "freqs": core.Fq, "channels": core.S, "dim": model.layers[0][0].layers[0][0].to_qkv.in_features,
         "heads": model.layers[0][0].layers[0][0].heads, "depth": len(model.layers), "bands": len(nf),
@@ -395,20 +421,20 @@ def session(path):
     return ort.InferenceSession(str(path), o, providers=["CPUExecutionProvider"])
 
 
-def mixes():
+def mixes(C):
     import torch
 
     t = torch.arange(SEGMENT) / 44100
     tone = sum(torch.sin(2 * math.pi * f * t) / k for k, f in enumerate((110, 220, 440, 880, 1760), 1))
-    return (("noise", 0.1 * torch.randn(1, 2, SEGMENT)), ("tones", 0.2 * torch.stack([tone, 0.8 * tone])[None]))
+    return (("noise", 0.1 * torch.randn(1, C, SEGMENT)), ("tones", 0.2 * torch.stack([tone, 0.8 * tone][:C])[None]))
 
 
 def verify(model, run, label, tol):
-    """The vocals rebuilt from run(spec) against MelBandRoformer.forward: noise and tones."""
+    """The stem rebuilt from run(spec) against the model's forward: noise and tones."""
     import numpy as np
     import torch
 
-    for name, mix in mixes():
+    for name, mix in mixes(model.audio_channels):
         with torch.no_grad():
             want = model(mix).numpy()
             got = istft(model, torch.as_tensor(run(stft(model, mix))), SEGMENT)[:, 0].numpy()
@@ -419,20 +445,28 @@ def verify(model, run, label, tol):
             raise SystemExit(f"{label}: verification failed ({rel:.2e} >= {tol})")
 
 
-def reference(model, out_dir):
-    """The reference separation: MelBandRoformer.forward on segments as scripts/reference.py's chunked() cuts them
-    (step 0.5, no standardization: Kim's config normalizes nothing), over a 20 s mix with a noise floor."""
+def reference(model, out_dir, stem):
+    """The reference separation: the model's forward on segments as scripts/reference.py's chunked() cuts them
+    (step 0.5, no standardization: Kim's config normalizes nothing, nor anvuew's), over a 20 s mix with a noise floor;
+    a mono model's channel by channel, as separate.js runs a mono preset."""
     import torch
+
+    import numpy as np
 
     sys.path.insert(0, str(Path(__file__).parent))
     import reference as ref
 
     def run(seg):
         with torch.no_grad():
-            return model(torch.from_numpy(seg)[None])[0][None].numpy()   # (1 stem, C, L)
+            y = model(torch.from_numpy(seg)[None])                     # (1, C, L), BS-RoFormer's (1, 1 stem, C, L)
+            return (y[0] if y.ndim == 4 else y[0][None]).numpy()       # (1 stem, C, L)
 
     # under the mix a noise floor 60 dB down: each band normalizes its input, and a silent band's is its rounding
-    ref.write(out_dir, lambda mix: {"vocals": ref.chunked(mix, run, SEGMENT, STEP)[0]}, 20.0, 1e-3)
+    if model.audio_channels == 1:
+        each = lambda mix: np.concatenate([ref.chunked(mix[c:c + 1], run, SEGMENT, STEP)[0] for c in range(len(mix))])
+    else:
+        each = lambda mix: ref.chunked(mix, run, SEGMENT, STEP)[0]
+    ref.write(out_dir, lambda mix: {stem: each(mix)}, 20.0, 1e-3)
 
 
 def main():
@@ -441,9 +475,13 @@ def main():
     ap.add_argument("--out-dir", default=None, help="default: $AUDIO_NEURAL_CACHE/<model> or ~/.cache/audiojs/neural/<model>")
     ap.add_argument("--opset", type=int, default=17)
     ap.add_argument("--fp16", action="store_true", help="also write <model>.fp16.onnx (float16 weights, float32 compute)")
-    ap.add_argument("--verify", action="store_true", help="compare with MelBandRoformer.forward; write the reference separation")
+    ap.add_argument("--verify", action="store_true", help="compare with the model's forward; write the reference separation")
     ap.add_argument("--engine", action="store_true", help="also write <model>.engine.bin/.json: the tensors for roformer.js, the package's WebGPU engine")
     args = ap.parse_args()
+    if args.engine and MODELS[args.model][3] != "MelBandRoformer":
+        raise SystemExit("--engine: roformer.js runs Mel-Band RoFormer alone")
+    global SEGMENT
+    SEGMENT = MODELS[args.model][4]
 
     cache = Path(os.environ.get("AUDIO_NEURAL_CACHE") or Path.home() / ".cache" / "audiojs" / "neural")
     out_dir = Path(args.out_dir) if args.out_dir else cache / args.model
@@ -466,7 +504,7 @@ def main():
         verify(model, lambda spec: s.run(None, {"mix_spec": spec.numpy()})[0], path.name, 1e-3)
         del s
         gc.collect()
-        reference(model, out_dir)
+        reference(model, out_dir, MODELS[args.model][5])
     if args.fp16:
         fp16(path, out_dir / f"{args.model}.fp16.onnx")
         if args.verify:

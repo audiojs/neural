@@ -380,6 +380,15 @@ const MEL = {
 	engine: { meta: 'mel-roformer.engine.json', bin: 'mel-roformer.engine.bin', sha256: '140fedcd9d03a8f918b235688c69f4dfdd86b08f9d430277659c095688a026ff' },
 }
 
+// anvuew's room de-reverb (a mono BS-RoFormer, GPL-3.0 weights) as scripts/export-roformer.py exports it: its STFT
+// (Hann of 2048, hop 512, unnormalized), 8.7 s segments of 751 frames every 4.35 s, as Music-Source-Separation-Training's
+// demix() runs it (num_overlap 2); each channel apart, nothing normalized. Its one stem is the voice dry; the residual
+// is the room
+const ROOM = {
+	modelType: 'complex', sampleRate: 44100, targets: ['dry'], sources: ['dry'], n: 2048, hop: 512, window: 'hann',
+	normalized: false, segment: 384000, frames: 751, step: 0.5, standardize: false, mono: true, gpu: true, script: 'export-roformer.py',
+}
+
 // The compact files (scripts/compact.py: int8 weights, a few float16, float32 compute), each within 0.05 dB of its
 // export's median SDR or SNR per stem (README, Size); their Hugging Face repositories, and SHA-256 checked when fetched
 const FILES = {
@@ -389,6 +398,8 @@ const FILES = {
 	tiger: { file: 'tiger.int8.onnx', repo: 'audiojs/tiger-dnr', sha256: '2189859ac7e89cf4d9d284c6f393e737aaa2b3233ed7ee424ad622012bce7bca' },
 	// float16 weights, float32 compute: half the download; int8 (259 MB) ran slower on WebGPU and 10 dB further from float32
 	'mel-roformer': { file: 'mel-roformer.fp16.onnx', repo: 'audiojs/mel-roformer', sha256: 'adcbbb826f12453fbb86652b503242d565a9c81cdef1bca2fe0e54752eba91ef' },
+	// float16 weights, float32 compute: 60 MB, its output 49 dB from the export's
+	'dereverb-room': { file: 'dereverb-room.fp16.onnx', repo: 'audiojs/dereverb-room', sha256: '99797e086a71d1cb57d50f3b5be93dcb7c89c49d1537c60487a488a24aaee9ee' },
 }
 
 // The hosted revision of each compact file's repository (a commit), its URL https://huggingface.co/<repo>/resolve/<revision>/
@@ -420,6 +431,9 @@ export const models = {
 	tiger: { ...TIGER, ...FILES.tiger },
 	// Mel-Band RoFormer (Kimberley Jensen's vocals model, MIT weights) as scripts/export-roformer.py exports it for the GPU
 	'mel-roformer': { ...MEL, ...FILES['mel-roformer'] },
+	// anvuew's room de-reverb (BS-RoFormer, GPL-3.0 weights) as scripts/export-roformer.py exports it: a voice in a room
+	// in, the voice dry out
+	'dereverb-room': { ...ROOM, ...FILES['dereverb-room'] },
 }
 
 async function cacheDir() {
