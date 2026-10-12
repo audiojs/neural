@@ -411,6 +411,7 @@ export const REVISIONS = {
 	mrx: 'dedc823a0bea2ed085d19e8b7f32589d35169ee8',
 	tiger: '1c959ab7ff8794dc5663b104ba301687ab95d2ab',
 	'mel-roformer': 'c1aba02c00a0bee852d6754fe6ede8164f90a4b3',
+	'dereverb-room': 'b4c2d14da9f2199099656195b06fd8253fd16e1d',
 }
 
 const hosted = name => models[name].repo && REVISIONS[name] ? `https://huggingface.co/${models[name].repo}/resolve/${REVISIONS[name]}/${models[name].file}` : null
