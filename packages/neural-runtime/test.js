@@ -159,3 +159,44 @@ test('backends — Node reports \'node\', and the GPU providers onnxruntime-node
   is(b[0], 'node')
   ok(b.slice(1).every(x => x === 'webgpu' || x === 'coreml'), b.join())
 })
+
+test("'#ort' in Node is ort-node.js, by package.json's \"node\" condition", () => {
+  is(import.meta.resolve('#ort'), new URL('./ort-node.js', import.meta.url).href)
+})
+
+// A browser's build, made here: runtime.js again with '#ort' resolved without the "node" condition, as a bundler or
+// esm.sh resolves it for a page, and onnxruntime-web's builds stubbed to record which loads. Node's own process is
+// there throughout: the browser path is package.json's choice, not a guess from process.
+test("browser build: onnxruntime-web, each backend its own build, imported when that backend first loads; 'node' refused", async t => {
+  let { registerHooks } = await import('node:module')
+  if (!registerHooks) return t?.skip?.('needs module.registerHooks (Node 22.15 or 23.5)')
+  let loaded = globalThis.__ortLoaded = []
+  let stub = spec => 'data:text/javascript,' + encodeURIComponent(`globalThis.__ortLoaded.push(${JSON.stringify(spec)})
+    export class Tensor { constructor(type, data, dims) { Object.assign(this, { type, data, dims }) } }
+    export const env = { wasm: {} }
+    export const InferenceSession = { create: async () => ({ inputNames: ['x'], outputNames: ['y'], run: async f => ({ y: f.x }), release: async () => {},
+      get inputMetadata() { if (${JSON.stringify(spec)}.endsWith('webgl')) throw Error('Getting model metadata is not supported in webgl backend.'); return [{ name: 'x', isTensor: true, type: 'float32', shape: [1, 2] }] } }) }`)
+  let hooks = registerHooks({
+    resolve(spec, ctx, next) {
+      if (spec.startsWith('onnxruntime-web')) return { url: stub(spec), shortCircuit: true }
+      if (ctx.parentURL?.endsWith('?browser')) return next(spec, { ...ctx, conditions: ['browser', 'import', 'default'] })
+      return next(spec, ctx)
+    },
+  })
+  try {
+    let web = await import('./runtime.js?browser')
+    is(await web.backends(), ['wasm'], "backends(): a browser's, with no GPU adapter")
+    is(loaded, [], 'nothing imported before a session')
+    let s = await web.load(LINEAR)
+    is(s.backend, 'wasm', "'auto' is 'wasm'")
+    is([...(await s.run({ x: tensor(Float32Array.from([1, 2]), [1, 2]) })).y.data], [1, 2], 'tensors through the stub')
+    await web.load(LINEAR, { backend: 'wasm' })
+    is(loaded, ['onnxruntime-web/wasm'], 'the wasm build alone, imported once')
+    is(s.inputs, [{ name: 'x', dims: [1, 2], type: 'float32' }], 'inputs with their metadata')
+    await web.load(LINEAR, { backend: 'webgpu' })
+    is((await web.load(LINEAR, { backend: 'webgl' })).inputs, [{ name: 'x' }], "webgl, whose backend throws asking metadata: inputs by name")
+    is(loaded, ['onnxruntime-web/wasm', 'onnxruntime-web/webgpu', 'onnxruntime-web/webgl'], 'each backend its own build')
+    await rejects(() => web.load(LINEAR, { backend: 'node' }), /backend 'node' needs Node\.js/)
+    await rejects(() => web.load(LINEAR, { backend: 'toString' }), /unknown backend 'toString'/)
+  } finally { hooks.deregister(); delete globalThis.__ortLoaded }
+})

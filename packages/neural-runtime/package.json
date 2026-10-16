@@ -1,6 +1,6 @@
 {
   "name": "@audio/neural-runtime",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Model inference adapter — ONNX Runtime (Node/wasm/webgpu) behind one worklet-ready interface",
   "type": "module",
   "sideEffects": false,
@@ -13,13 +13,21 @@
     },
     "./package.json": "./package.json"
   },
+  "imports": {
+    "#ort": {
+      "node": "./ort-node.js",
+      "default": "./ort-web.js"
+    }
+  },
   "files": [
     "runtime.js",
+    "ort-node.js",
+    "ort-web.js",
     "index.d.ts"
   ],
   "peerDependencies": {
     "onnxruntime-node": ">=1.14.0",
-    "onnxruntime-web": ">=1.14.0"
+    "onnxruntime-web": ">=1.17.0"
   },
   "peerDependenciesMeta": {
     "onnxruntime-node": {

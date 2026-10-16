@@ -2,19 +2,14 @@
 // onnxruntime-web (browser/worker/worklet), so every neural atom (asr, align,
 // separate, diarize, tts, denoise, …) loads and runs models the same way.
 //
-// Neither runtime is a hard dependency: both are optional peers, resolved by
-// dynamic import the first time a backend is used and memoized after. Missing
-// the right one throws naming the package to install, rather than failing to
-// resolve a static import at bundle time.
+// Neither runtime is a hard dependency: both are optional peers. '#ort' holds a
+// literal import() per backend, which a bundler or a CDN resolves, loaded the
+// first time that backend is used and memoized after; missing its package throws
+// naming it. package.json "imports" picks '#ort' by condition: ort-node.js in Node,
+// ort-web.js elsewhere, so a browser build never meets onnxruntime-node and a
+// process polyfill (esm.sh's, a bundler's) can't send a page down the Node path.
 
-const isNode = typeof process !== 'undefined' && !!process?.versions?.node
-
-const ORT_SPEC = {
-  node: 'onnxruntime-node',
-  wasm: 'onnxruntime-web',
-  webgl: 'onnxruntime-web',
-  webgpu: 'onnxruntime-web/webgpu',
-}
+import { isNode, runtimes } from '#ort'
 
 function resolveBackend(want) {
   if (!want || want === 'auto') return isNode ? 'node' : 'wasm'
@@ -33,16 +28,15 @@ function getOrt(backend) {
     throw new Error(`neural-runtime: backend '${backend}' needs a browser (onnxruntime-web) — Node runs backend 'node' (onnxruntime-node), and 'webgpu' and 'coreml' as its providers`)
   if (!isNode && backend === 'node')
     throw new Error(`neural-runtime: backend 'node' needs Node.js (onnxruntime-node) — in a browser use 'wasm' or 'webgpu' (onnxruntime-web)`)
-  let spec = ORT_SPEC[backend]
-  if (!spec) throw new Error(`neural-runtime: unknown backend '${backend}' (want 'auto', 'node', 'wasm', 'webgpu', or 'webgl')`)
-  let p = ortCache.get(spec)
+  if (!Object.hasOwn(runtimes, backend)) throw new Error(`neural-runtime: unknown backend '${backend}' (want 'auto', 'node', 'wasm', 'webgpu', or 'webgl')`)
+  let p = ortCache.get(backend)
   if (!p) {
-    p = import(spec).then(m => m.default ?? m).catch(err => {
-      ortCache.delete(spec)
-      let pkg = spec.split('/')[0]
+    p = runtimes[backend]().then(m => m.default ?? m).catch(err => {
+      ortCache.delete(backend)
+      let pkg = isNode ? 'onnxruntime-node' : 'onnxruntime-web'
       throw new Error(`neural-runtime: ${pkg} is required for backend '${backend}' — install it: npm install ${pkg} (${err.message})`)
     })
-    ortCache.set(spec, p)
+    ortCache.set(backend, p)
   }
   return p
 }
@@ -80,10 +74,10 @@ function fromOrtTensor(t) {
 
 // session.input/outputMetadata (name, isTensor, type, shape) landed after
 // session.input/outputNames in onnxruntime-common — fall back to names only
-// when the installed version doesn't expose it.
+// when the installed version doesn't expose it, or its backend throws asking (webgl).
 function ioMeta(session, kind) {
-  let names = session[kind + 'Names'] || []
-  let meta = session[kind + 'Metadata']
+  let names = session[kind + 'Names'] || [], meta
+  try { meta = session[kind + 'Metadata'] } catch {}
   if (!meta) return names.map(name => ({ name }))
   return meta.map((m, i) => (m.isTensor
     ? { name: m.name ?? names[i], dims: Array.from(m.shape), type: m.type }

@@ -1,6 +1,6 @@
 {
   "name": "@audio/neural-timbre",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Timbre recognition: a small encoder maps one note to a vector, a catalog of preset vectors names the sound (Yamaha DX7 first), ranked by cosine through @audio/neural-runtime",
   "type": "module",
   "sideEffects": false,
@@ -21,7 +21,7 @@
     "scripts/*.py"
   ],
   "dependencies": {
-    "@audio/neural-runtime": "^0.1.0",
+    "@audio/neural-runtime": "^0.2.0",
     "@audio/resample-sinc": "^1.1.2",
     "fourier-transform": "^2.4.1"
   },

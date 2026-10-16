@@ -30,7 +30,7 @@ import resampleSinc from '@audio/resample-sinc'
 import { load as neuralLoad, tensor, fetchModel, fetchJson, backends } from '@audio/neural-runtime'
 
 const PI2 = Math.PI * 2
-const isNode = typeof process !== 'undefined' && !!process.versions?.node
+const isNode = globalThis.process?.release?.name === 'node'  // Node, Bun, Deno: not a process polyfill (esm.sh's, a bundler's), whose versions.node is set
 
 // ---------------------------------------------------------------- STFT/iSTFT
 
@@ -575,7 +575,7 @@ function loader(opts, preset) {
 		let s = own && await own
 		if (s) return s
 		let spec = g.sha256 && !g.spec.startsWith('file:') ? await checked(g.spec, g.sha256) : g.spec
-		return neuralLoad(spec, { backend: await device, sessionOptions })
+		return neuralLoad(spec, { backend: await device, sessionOptions, wasmPaths: opts.wasmPaths })
 	}
 }
 

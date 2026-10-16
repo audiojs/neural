@@ -58,7 +58,7 @@ export const LEVEL = -20
 // the gain (README, Accuracy).
 export const FILL = -20
 
-const isNode = typeof process !== 'undefined' && !!process.versions?.node
+const isNode = globalThis.process?.release?.name === 'node'  // Node, Bun, Deno: not a process polyfill (esm.sh's, a bundler's), whose versions.node is set
 
 // ------------------------------------------------ model archive
 

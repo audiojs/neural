@@ -29,7 +29,7 @@ import { AutoTokenizer, SpeechT5ForTextToSpeech, SpeechT5HifiGan, VitsModel, Ten
 import os from 'node:os'
 import path from 'node:path'
 
-const IS_NODE = typeof process !== 'undefined' && !!process.versions?.node
+const IS_NODE = globalThis.process?.release?.name === 'node'  // Node, Bun, Deno: not a process polyfill (esm.sh's, a bundler's), whose versions.node is set
 
 const DEFAULT_MODEL = 'Xenova/speecht5_tts'
 const DEFAULT_VOCODER = 'Xenova/speecht5_hifigan'

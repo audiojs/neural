@@ -25,12 +25,12 @@ session.free()
 |---|---|---|
 | `'auto'` (default) | picks `'node'` in Node, `'wasm'` in a browser/worker/worklet | either |
 | `'node'` | `onnxruntime-node` | Node only |
-| `'wasm'` | `onnxruntime-web` | browser/worker/worklet only |
+| `'wasm'` | `onnxruntime-web/wasm` | browser/worker/worklet only |
 | `'webgpu'` | `onnxruntime-web/webgpu`; in Node, `onnxruntime-node`'s WebGPU provider (Dawn) | browser/worker/worklet; Node |
 | `'coreml'` | `onnxruntime-node`'s CoreML provider | Node on macOS |
-| `'webgl'` | `onnxruntime-web` | browser/worker/worklet only |
+| `'webgl'` | `onnxruntime-web/webgl` | browser/worker/worklet only |
 
-Neither `onnxruntime-node` nor `onnxruntime-web` is a hard dependency — both are optional peers (`peerDependenciesMeta.optional`), resolved by dynamic `import()` the first time a backend is used and memoized after. Asking for a backend your environment can't run (`'wasm'` in Node, `'node'` in a browser) throws immediately, naming what's missing and where it does work; a resolvable but uninstalled package throws naming the install command. `backends()` reports what's actually usable here: `['node']` in Node, with `'webgpu'` and `'coreml'` where its onnxruntime-node has them, `['wasm']` or `['wasm', 'webgpu']` (when `navigator.gpu` gives an adapter that is no fallback, not SwiftShader) in a browser.
+Neither `onnxruntime-node` nor `onnxruntime-web` (1.17 or later) is a hard dependency — both are optional peers (`peerDependenciesMeta.optional`). Each backend's build is a literal `import()`, which a bundler or a CDN such as esm.sh resolves, loaded the first time that backend is used and memoized after. Which runtime a build gets is package.json's choice, not a guess at the environment: `"imports": { "#ort": { "node": "./ort-node.js", "default": "./ort-web.js" } }` gives Node (and Bun, Deno) `onnxruntime-node` and everything else `onnxruntime-web`, so a browser build never meets `onnxruntime-node`, and a `process` polyfill (esm.sh's, a bundler's) can't send a page down the Node path. Asking for a backend your environment can't run (`'wasm'` in Node, `'node'` in a browser) throws immediately, naming what's missing and where it does work; a resolvable but uninstalled package throws naming the install command. `backends()` reports what's actually usable here: `['node']` in Node, with `'webgpu'` and `'coreml'` where its onnxruntime-node has them, `['wasm']` or `['wasm', 'webgpu']` (when `navigator.gpu` gives an adapter that is no fallback, not SwiftShader) in a browser.
 
 `run()` queues concurrent calls onto one sequential chain per session — safe regardless of whether the underlying ORT build tolerates overlapping `run()` calls. `free()` maps to `session.release()`, is idempotent, and `run()` after `free()` throws.
 

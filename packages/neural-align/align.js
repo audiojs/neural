@@ -21,7 +21,7 @@ const models = new Map()        // "<model>|<dtype>|<device>|<cache>" → Promis
 // (unrelated) ONNX-bytes cache off $AUDIO_NEURAL_CACHE / ~/.cache/audiojs/neural —
 // transformers.js' model files go in that root's 'hf/' subdir so the two caches
 // never collide. Browser keeps transformers.js' own Cache API default untouched.
-const isNode = typeof process !== 'undefined' && process.versions?.node
+const isNode = globalThis.process?.release?.name === 'node'  // Node, Bun, Deno: not a process polyfill (esm.sh's, a bundler's), whose versions.node is set
 if (isNode) {
   let [{ join }, os] = await Promise.all([import('node:path'), import('node:os')])
   env.cacheDir = process.env.AUDIO_NEURAL_CACHE

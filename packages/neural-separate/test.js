@@ -447,6 +447,17 @@ test('separate: preset without its weights: names the missing file and the expor
 	await rejects(() => separate([x, x], { sampleRate: 44100, model: 'umxhq', targets: ['piano'], weights: empty }), /umxhq has no target 'piano'/, 'unknown target')
 })
 
+// esm.sh's build gives `process` a polyfill whose versions.node is set (unenv's, release {}), as some bundlers do: a page
+// importing separate.js through one is still a browser, and a directory for weights is no URL there
+test('separate: a process polyfill with versions.node set is no Node: the browser path', async () => {
+	let real = Object.getOwnPropertyDescriptor(globalThis, 'process'), page
+	Object.defineProperty(globalThis, 'process', { value: { versions: { node: '22.14.0' }, release: {}, env: {} }, configurable: true, writable: true })
+	try { page = await import('./separate.js?process-polyfill') } finally { Object.defineProperty(globalThis, 'process', real) }
+	let empty = mkdtempSync(path.join(os.tmpdir(), 'neural-separate-')), x = new Float32Array(4410)
+	await rejects(() => separate([x, x], { sampleRate: 44100, model: 'scnet', weights: empty }), /scnet weights not found/, 'Node: a directory')
+	await rejects(() => page.default([x, x], { sampleRate: 44100, model: 'scnet', weights: empty }), /must be a URL in the browser/, 'the page: a URL')
+})
+
 // A compact preset reads its compact file, else its export in the same directory
 test('separate: a compact preset reads its compact file, else its export', async () => {
 	let dir = mkdtempSync(path.join(os.tmpdir(), 'neural-separate-')), seen

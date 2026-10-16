@@ -131,6 +131,9 @@ export interface SeparateOptions {
 	hop?: number
 	/** passed through to @audio/neural-runtime's load() as `backend` */
 	device?: string
+	/** where onnxruntime-web's .wasm files are served (a URL prefix, or a file → URL map), passed through to
+	 *  @audio/neural-runtime's load(): for an ORT build loaded from a CDN that rebuilds it (esm.sh) */
+	wasmPaths?: string | Record<string, string>
 	/** only 'float32' is implemented; anything else throws */
 	dtype?: 'float32'
 	progress?: (p: { chunk: number; totalChunks: number }) => void

@@ -277,6 +277,7 @@ let vocals = complex.vocals.map(ch => istft(ch, { length: left.length }))
 | `window` / `normalized` / `frames` | the preset's | `'complex'`: the model's STFT window (`'ones'`, torch.stft's window=None, or `'hann'`), its 1/√n scaling, its frames per segment when the graph does not declare them |
 | `targetRate` | the preset's rate, else the input rate | resample to the model's rate for inference; stems are resampled back to the input rate |
 | `device` | — | passed through to `@audio/neural-runtime`'s `load()` as `backend` |
+| `wasmPaths` | — | where onnxruntime-web's `.wasm` files are served, passed through to `load()`: needed where ORT itself comes from a CDN that rebuilds it (esm.sh), e.g. `'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/'` |
 | `dtype` | `'float32'` | only `'float32'` tensor marshalling is implemented; anything else throws |
 | `progress` | — | `({ chunk, totalChunks }) => {}` |
 | `session` | — | overrides `@audio/neural-runtime`'s `load()` — for tests, or a custom ORT setup |

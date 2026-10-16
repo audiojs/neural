@@ -27,7 +27,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 const SR = 16000 // WavLM-base-plus-sv's fixed input rate, baked into the pretrained encoder
-const IS_NODE = typeof process !== 'undefined' && !!process.versions?.node
+const IS_NODE = globalThis.process?.release?.name === 'node'  // Node, Bun, Deno: not a process polyfill (esm.sh's, a bundler's), whose versions.node is set
 const DEFAULT_MODEL = 'Xenova/wavlm-base-plus-sv'
 
 // Lane-wide cache location (matches @audio/neural-runtime, which caches raw ONNX bytes

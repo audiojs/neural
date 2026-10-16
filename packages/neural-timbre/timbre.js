@@ -29,7 +29,7 @@ export const catalogs = {
 	'dx7-all': new URL(FILES['dx7-all'].file, HOSTED),
 }
 
-const isNode = typeof process !== 'undefined' && !!process.versions?.node
+const isNode = globalThis.process?.release?.name === 'node'  // Node, Bun, Deno: not a process polyfill (esm.sh's, a bundler's), whose versions.node is set
 // a URL scheme has two characters at least, so a Windows drive (C:\) stays a path
 const isUrl = s => /^[a-z][a-z0-9+.-]+:/i.test(s)
 

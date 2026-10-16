@@ -25,7 +25,7 @@ import { pipeline, env } from '@huggingface/transformers'
 // only when IS_NODE is true.
 
 const SR = 16000  // Whisper's fixed input rate — not a tunable, it's baked into the pretrained encoder
-const IS_NODE = typeof process !== 'undefined' && !!process.versions?.node
+const IS_NODE = globalThis.process?.release?.name === 'node'  // Node, Bun, Deno: not a process polyfill (esm.sh's, a bundler's), whose versions.node is set
 
 // Curated model table. All are OpenAI Whisper checkpoints (MIT) converted to ONNX by the
 // onnx-community org on the Hugging Face Hub. `size` is the q8 download total (encoder +
