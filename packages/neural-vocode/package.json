@@ -1,0 +1,57 @@
+{
+  "name": "@audio/neural-vocode",
+  "version": "0.1.0",
+  "description": "A sound made again from its mel spectrogram by Vocos: a vocoder's artifacts (a TTS's phase smear, its frames ringing on) give way to Vocos's own, through @audio/neural-runtime",
+  "type": "module",
+  "sideEffects": false,
+  "main": "vocode.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./vocode.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "vocode.js",
+    "index.d.ts",
+    "scripts/*.py"
+  ],
+  "dependencies": {
+    "@audio/neural-runtime": "^0.2.0",
+    "@audio/resample-sinc": "^1.1.2",
+    "fourier-transform": "^2.4.1"
+  },
+  "devDependencies": {
+    "onnxruntime-node": "^1.29.0",
+    "tst": "^9.4.0"
+  },
+  "scripts": {
+    "test": "node test.js"
+  },
+  "keywords": [
+    "audio",
+    "ml",
+    "neural",
+    "vocoder",
+    "vocos",
+    "tts",
+    "speech-enhancement",
+    "onnx"
+  ],
+  "license": "MIT",
+  "author": "Dmitry Iv. <dfcreative@gmail.com>",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/audiojs/neural.git",
+    "directory": "packages/neural-vocode"
+  },
+  "funding": "https://github.com/sponsors/audiojs",
+  "publishConfig": {
+    "access": "public"
+  }
+}
