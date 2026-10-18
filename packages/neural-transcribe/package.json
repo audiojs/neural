@@ -1,6 +1,6 @@
 {
   "name": "@audio/neural-transcribe",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Polyphonic note transcription with pitch bends: Spotify's Basic Pitch (ICASSP 2022) through ONNX Runtime, in Node and the browser",
   "type": "module",
   "sideEffects": false,
@@ -20,7 +20,7 @@
     "NOTICE"
   ],
   "dependencies": {
-    "@audio/neural-runtime": "^0.1.0",
+    "@audio/neural-runtime": "^0.2.0",
     "@audio/resample-sinc": "^1.2.0"
   },
   "devDependencies": {
