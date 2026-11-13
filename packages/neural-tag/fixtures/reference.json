@@ -1,0 +1,209 @@
+{
+ "commit": "c14bf9ad91962cf189f9f58db2132c06247fcd53",
+ "weights": "13c3308955bbfaef262f175ac9c40e47b134573a93984f009220dd7cc12a1744",
+ "inputs": {
+  "beep": {
+   "samples": 8000,
+   "sha256": "baf11941b220faeefa1e6e1631e3c361b389372155e0c2d63cad9e46d984b0da",
+   "hop": 0.48,
+   "patches": 1,
+   "features": [
+    0
+   ],
+   "top": [
+    [
+     475,
+     "Beep, bleep",
+     0.9731
+    ],
+    [
+     498,
+     "Sound effect",
+     0.0518
+    ],
+    [
+     495,
+     "Sine wave",
+     0.0195
+    ]
+   ]
+  },
+  "empty": {
+   "samples": 0,
+   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "hop": 0.48,
+   "patches": 1,
+   "features": [],
+   "top": [
+    [
+     494,
+     "Silence",
+     1.0
+    ],
+    [
+     0,
+     "Speech",
+     0.0
+    ],
+    [
+     132,
+     "Music",
+     0.0
+    ]
+   ]
+  },
+  "lena": {
+   "samples": 196348,
+   "sha256": "0c5adf210e0b95ed7c7fd0f15597f8cd7f07b817fbd96afb92b650ee559df310",
+   "hop": 0.48,
+   "patches": 25,
+   "features": [
+    0,
+    24
+   ],
+   "top": [
+    [
+     0,
+     "Speech",
+     0.6023
+    ],
+    [
+     19,
+     "Crying, sobbing",
+     0.0619
+    ],
+    [
+     21,
+     "Whimper",
+     0.0567
+    ]
+   ]
+  },
+  "noise": {
+   "samples": 48000,
+   "sha256": "28405fe8d3ac7d08dd440bf0a15d0aa009cba21a455fe953f6188744c7719983",
+   "hop": 0.48,
+   "patches": 6,
+   "features": [
+    5
+   ],
+   "top": [
+    [
+     514,
+     "White noise",
+     0.694
+    ],
+    [
+     507,
+     "Noise",
+     0.5276
+    ],
+    [
+     509,
+     "Static",
+     0.3616
+    ]
+   ]
+  },
+  "pluck": {
+   "samples": 48000,
+   "sha256": "bbb1dac3ddbd9f1bf6b0d6461da5e04386d9ac97d75ce83875b80e80936ac65b",
+   "hop": 0.48,
+   "patches": 6,
+   "features": [
+    5
+   ],
+   "top": [
+    [
+     132,
+     "Music",
+     0.5065
+    ],
+    [
+     87,
+     "Cowbell",
+     0.1442
+    ],
+    [
+     133,
+     "Musical instrument",
+     0.1063
+    ]
+   ]
+  },
+  "silence": {
+   "samples": 32000,
+   "sha256": "eec19bc6af0b3b6dfb97a08782c65f4bb3c3203e789a015d2008b0d689ad08be",
+   "hop": 0.48,
+   "patches": 4,
+   "features": [],
+   "top": [
+    [
+     494,
+     "Silence",
+     1.0
+    ],
+    [
+     0,
+     "Speech",
+     0.0
+    ],
+    [
+     132,
+     "Music",
+     0.0
+    ]
+   ]
+  },
+  "sweep": {
+   "samples": 48000,
+   "sha256": "6d51436d7eda2c586f2ebd22da80980f4b2ead2b850a204406ea02f25e162013",
+   "hop": 0.48,
+   "patches": 6,
+   "features": [
+    5
+   ],
+   "top": [
+    [
+     153,
+     "Synthesizer",
+     0.6673
+    ],
+    [
+     147,
+     "Keyboard (musical)",
+     0.5486
+    ],
+    [
+     132,
+     "Music",
+     0.3224
+    ]
+   ]
+  },
+  "lena@2": {
+   "samples": 196348,
+   "sha256": "0c5adf210e0b95ed7c7fd0f15597f8cd7f07b817fbd96afb92b650ee559df310",
+   "hop": 2.0,
+   "patches": 7,
+   "features": [],
+   "top": [
+    [
+     0,
+     "Speech",
+     0.6034
+    ],
+    [
+     21,
+     "Whimper",
+     0.0662
+    ],
+    [
+     19,
+     "Crying, sobbing",
+     0.053
+    ]
+   ]
+  }
+ }
+}

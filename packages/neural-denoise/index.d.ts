@@ -51,6 +51,12 @@ export function mixback(x: Float32Array, y: Float32Array, opts?: { limit?: numbe
 /** Per sample of x, the gain an enhancement of it takes: 1 where it is speech or noise, 0 where it is music (inaSpeechSegmenter's segments over the whole input, as denoise() decides), ramped over 200 ms; blend g·y + (1 − g)·x. */
 export function guard(x: Float32Array, sampleRate?: number): Promise<Float32Array>
 
+/** What x is, stretch by stretch, as inaSpeechSegmenter's speech/music/noise CNN segments the whole input (no prior for speech, which is the guard's): in order, end to end from 0 to its length, seconds; none for an input of digital silence. */
+export function segments(x: Float32Array, sampleRate?: number): Promise<{ kind: 'speech' | 'music' | 'noise', start: number, end: number }[]>
+
+/** The kinds segments() names, as the classifier orders them. */
+export const KINDS: ['speech', 'music', 'noise']
+
 /** Load a model once to reuse it across denoise() calls. */
 export function load(model?: 'rnnoise' | 'deepfilternet3', opts?: LoadOptions): Promise<Model>
 

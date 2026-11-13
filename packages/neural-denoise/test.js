@@ -11,11 +11,11 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
-import denoise, { load, weights, rnnoise, mixback, guard, FRAME, MODEL } from './denoise.js'
+import denoise, { load, weights, rnnoise, mixback, guard, segments, KINDS, FRAME, MODEL } from './denoise.js'
 import { model } from './rnnoise.js'
 import { loadDeepFilter, enhance, erbWidths, voicing, bandEdge, LEVEL, FILL, FLOOR } from './deepfilter.js'
 import { rfft, irfft, WINDOW, N, HOP, BINS } from './fft.js'
-import { guardNet, net as guardModel, analyzer, offline, online, gains, RAMP } from './guard.js'
+import { guardNet, net as guardModel, analyzer, states, patchOf, offline, online, gains, RAMP } from './guard.js'
 import { inputs, sha } from './scripts/rnnoise-reference.mjs'
 
 const CACHE = process.env.AUDIO_NEURAL_CACHE || path.join(os.homedir(), '.cache', 'audiojs', 'neural')
@@ -452,6 +452,37 @@ test('guard(): the offline gain at the input\'s rate, for any enhancement: 0 ove
 	}
 	let x = band(2), g = await guard(x, 48000)
 	is(maxDiff(g, gains(offline(x, nn), x.length, true)), 0, 'at 48 kHz: gains(offline(x)) as denoise() takes it')
+})
+
+test('segments(): what an input is, stretch by stretch, as the classifier decides it: a band music, white noise noise, lena her musical opening then speech; in order, end to end; none for silence', async () => {
+	for (let sr of [48000, 44100, 16000]) {
+		let s = await segments(band(5, sr), sr)
+		is(JSON.stringify(s), JSON.stringify([{ kind: 'music', start: 0, end: 5 }]), `${sr} Hz: the band is music, from 0 to its end`)
+	}
+	let seed = 7, rnd = () => (seed = (seed * 1664525 + 1013904223) % 4294967296, seed / 4294967296 - .5)
+	let hiss = Float32Array.from({ length: 4 * 48000 }, () => .2 * rnd())
+	is(JSON.stringify(await segments(hiss, 48000)), JSON.stringify([{ kind: 'noise', start: 0, end: 4 }]), 'white noise is noise')
+	// lena: a film scene, music under its first words (README, Music): ina's own decision, a frame its nearest patch's
+	let x = IN.lena.map(v => v / 32768), s = await segments(x, 48000), st = states(x, await guardNet(), 0)
+	is(s.map(v => v.kind).join(), 'music,speech', `lena: ${s.map(v => `${v.kind} ${v.start}–${v.end.toFixed(2)} s`).join(', ')}`)
+	ok(s[0].start === 0 && s.at(-1).end === x.length / 48000 && s.every((v, i) => !i || v.start === s[i - 1].end), 'in order, end to end, from 0 to the input\'s length')
+	ok(s.every(v => [v.start, v.end - .01].every(t => KINDS[st[patchOf(Math.round(t * 100), st.length)]] === v.kind)), 'each stretch its frames\' nearest patches\' state, no prior for speech')
+	ok(s[0].end > 1 && s[0].end < 4, `the opening ends at ${s[0].end} s`)
+	let B = band(5)
+	is((await segments(new Float32Array(48000), 48000)).length, 0, 'digital silence: none')
+	is((await segments(new Float32Array(100).fill(.1), 48000)).length, 0, 'shorter than a frame: none')
+	is((await segments(new Float32Array(0), 48000)).length, 0, 'empty: none')
+	// silence within takes the kind around it
+	let gap = new Float32Array(B.length + 48000 + B.length); gap.set(B); gap.set(B, B.length + 48000)
+	is((await segments(gap, 48000)).map(v => v.kind).join(), 'music', 'a second of digital silence between two stretches of the band: music throughout')
+	// a programme: the band, four noisy utterances, the band: the changes where the cuts are, to half a second
+	if (!existsSync(VB)) return console.log('  (no VoiceBank+DEMAND in ~/.cache/audiojs/data: the programme skipped)')
+	let S = readdirSync(VB).filter(f => f.endsWith('.wav')).sort().slice(0, 4).map(f => wav(path.join(VB, f))), n = S.reduce((a, v) => a + v.length, 0)
+	let y = new Float32Array(2 * B.length + n), o = B.length
+	y.set(B); for (let v of S) { y.set(v, o); o += v.length } y.set(B, o)
+	let p = await segments(y, 48000), cuts = [5, o / 48000]
+	is(p.map(v => v.kind).join(), 'music,speech,music', 'band, speech, band')
+	ok(cuts.every((c, i) => Math.abs(p[i].end - c) < .5), `changes at ${p[0].end} and ${p[1].end} s, the cuts at ${cuts.map(c => c.toFixed(2)).join(' and ')} s`)
 })
 
 test('guard: the stream decides from what has arrived: RNNoise\'s output to frame f − 2 stays the same whatever follows frame f', async () => {

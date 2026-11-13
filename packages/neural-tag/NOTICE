@@ -1,0 +1,14 @@
+@audio/neural-tag
+Copyright 2026 Dmitry Iv. and audiojs contributors
+
+This product includes a JavaScript translation of YAMNet's feature computation (features.py, params.py)
+and YAMNet's class map (yamnet_class_map.csv, as classes.js), from https://github.com/tensorflow/models,
+research/audioset/yamnet, at commit c14bf9ad91962cf189f9f58db2132c06247fcd53, Copyright 2019 The TensorFlow
+Authors, licensed under the Apache License, Version 2.0. The changes are listed in README.md (How it works).
+
+The class names and ids are those of the AudioSet ontology (https://github.com/audioset/ontology), made
+available by Google Inc. under a Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)
+license.
+
+The model is not included. tag.js reads a conversion of YAMNet's weights (yamnet.h5, Apache-2.0, Google)
+from opts.weights, the neural cache, or its hosted copy; scripts/export.py makes it.

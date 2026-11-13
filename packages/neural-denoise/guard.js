@@ -279,22 +279,33 @@ export function analyzer(nn) {
 
 const lp = (p, floor) => Math.log(Math.max(p, floor))
 
-/** offline(x, nn) → per 48 kHz frame of x (480 samples), 1 where it is music: ina's Viterbi over the whole input. */
-export function offline(x, nn) {
-	let a = analyzer(nn), P = [...a(x), ...a.end()], T = P.length, n = Math.ceil(x.length / 480), pass = new Uint8Array(n)
-	if (!T) return pass
+/**
+ * states(x, nn, prior) → per patch of x (48 kHz), its state on the best path, 0 speech, 1 music, 2 noise: ina's Viterbi
+ * over the whole input, each patch `prior` nats in favour of speech (the guard's PRIOR; 0 is ina's own decision).
+ */
+export function states(x, nn, prior = PRIOR) {
+	let a = analyzer(nn), P = [...a(x), ...a.end()], T = P.length, st = new Uint8Array(T)
+	if (!T) return st
 	// V: the best path's log-likelihood ending in each state (speech, music, noise); B: the state it came from. Every
-	// switch costs COST, speech gains PRIOR a patch; a patch of silence scores all states alike. Ties go to the lower
-	// state, as numpy's argmax.
+	// switch costs COST, speech gains the prior a patch; a patch of silence scores all states alike. Ties go to the
+	// lower state, as numpy's argmax.
 	let V = [0, 0, 0], B = new Uint8Array(T * 3)
 	for (let t = 0; t < T; t++) {
-		let e = P[t] ? P[t].map((p, s) => lp(p, 1e-10) + (s ? 0 : PRIOR)) : [0, 0, 0], j = V.indexOf(Math.max(...V))
+		let e = P[t] ? P[t].map((p, s) => lp(p, 1e-10) + (s ? 0 : prior)) : [0, 0, 0], j = V.indexOf(Math.max(...V))
 		V = V.map((v, s) => { let b = V[j] - COST > v ? j : s; B[t * 3 + s] = b; return (b === s ? v : V[j] - COST) + e[s] })
 	}
-	let music = new Uint8Array(T)
-	for (let t = T - 1, s = V.indexOf(Math.max(...V)); t >= 0; s = B[t * 3 + s], t--) music[t] = +(s === 1)
-	// each frame takes the patch centered nearest it
-	for (let g = 0; g < n; g++) pass[g] = music[Math.min(T - 1, Math.max(0, Math.round((g + .5 - 34.716) / STEP)))]
+	for (let t = T - 1, s = V.indexOf(Math.max(...V)); t >= 0; s = B[t * 3 + s], t--) st[t] = s
+	return st
+}
+
+/** patchOf(g, T) → the patch, of T, a 48 kHz frame g (480 samples) takes: the one centered nearest it. */
+export const patchOf = (g, T) => Math.min(T - 1, Math.max(0, Math.round((g + .5 - 34.716) / STEP)))
+
+/** offline(x, nn) → per 48 kHz frame of x (480 samples), 1 where it is music: ina's Viterbi over the whole input. */
+export function offline(x, nn) {
+	let st = states(x, nn), T = st.length, n = Math.ceil(x.length / 480), pass = new Uint8Array(n)
+	if (!T) return pass
+	for (let g = 0; g < n; g++) pass[g] = +(st[patchOf(g, T)] === 1)
 	return pass
 }
 

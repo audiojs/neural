@@ -6,7 +6,7 @@
 import resample from '@audio/resample-sinc'
 import { model as parseRNNoise, create, FRAME, LIMIT as RNNOISE_LIMIT } from './rnnoise.js'
 import { loadDeepFilter, enhance, level, bandEdge, MODEL, LEVEL, LIMIT as DFN_LIMIT, FLOOR } from './deepfilter.js'
-import { guardNet, offline, online, gains, blend } from './guard.js'
+import { guardNet, states, patchOf, offline, online, gains, blend } from './guard.js'
 
 export { create as rnnoise, FRAME } from './rnnoise.js'
 export { MODEL } from './deepfilter.js'
@@ -113,6 +113,29 @@ export async function guard(x, sampleRate = RATE) {
 	let nn = await guardNet(), x48 = sampleRate === RATE ? x : resample(Float32Array.from(x), { from: sampleRate, to: RATE })
 	let g = gains(offline(x48, nn), x48.length, true)
 	return sampleRate === RATE ? g : fit(resample(g, { from: RATE, to: sampleRate }), x.length)
+}
+
+/**
+ * segments(x, sampleRate) → what the input is, stretch by stretch: [{ kind, start, end }], kind 'speech', 'music' or
+ * 'noise', in seconds, in order and end to end from 0 to the input's length. Ina's segments over the whole input, as
+ * the classifier itself decides them: guard.js states() with no prior for speech (that is the guard's, for a voice
+ * under a bed). What counts as what follows its training, French radio and TV: speech over a music bed is speech, a
+ * song is music, its singer included. A change falls on the 10 ms frame whose nearest patch changes, a patch every
+ * 100 ms. Digital silence takes the kind around it; an input of nothing but silence, or shorter than a frame, has no
+ * segments.
+ */
+export const KINDS = ['speech', 'music', 'noise']
+export async function segments(x, sampleRate = RATE) {
+	if (!x.some(v => v !== 0)) return []
+	let nn = await guardNet(), x48 = sampleRate === RATE ? x : resample(Float32Array.from(x), { from: sampleRate, to: RATE })
+	let st = states(x48, nn, 0), T = st.length, n = Math.ceil(x48.length / 480), out = []
+	for (let g = 0; T && g < n; g++) {
+		let kind = KINDS[st[patchOf(g, T)]], last = out.at(-1)
+		if (last?.kind === kind) continue
+		if (last) last.end = g / 100
+		out.push({ kind, start: g / 100, end: x.length / sampleRate })
+	}
+	return out
 }
 
 // the enhanced y where the gain g (at 48 kHz) is 1, the input x where it is 0: music passes untouched

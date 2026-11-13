@@ -121,6 +121,35 @@ Both models enhance speech, and to them everything else is noise: at their defau
 
 It runs in JS: a stream's `process()` can't await ONNX Runtime, and RNNoise needs no runtime. The three upper convolutions (through im2col) and the dense layers run in a 1,074-byte WebAssembly SIMD kernel (`gemm.wat`), the first convolution once per frame and shared by the overlapping patches (the max pooling after it commutes with each patch's standardization); 1.1 s of CPU per minute of audio, 11 s on the JS path where WebAssembly SIMD is missing (same bits).
 
+`segments(x, sampleRate)` gives the classifier's own reading of an input: what it is, stretch by stretch, `[{ kind, start, end }]` in seconds, `kind` one of `'speech'`, `'music'`, `'noise'`, in order and end to end over the input. It is step 2 without the prior for speech, which is the guard's: ina's decision as it stands, each 10 ms frame taking the patch nearest it. Digital silence takes the kind around it; an input of nothing but silence has no segments. A host names a recording by it (`audio`'s editor: speech, music, both).
+
+```js
+import { segments } from '@audio/neural-denoise'
+
+await segments(pcm, 44100)  // [{ kind: 'music', start: 0, end: 2.5 }, { kind: 'speech', start: 2.5, end: 11.27 }]
+```
+
+What it names the test sets below (`node scripts/accuracy.mjs kinds test`): the share of each set's active 10 ms frames named each kind, and its files by the kind most of their active frames have.
+
+| Test set | Speech | Music | Noise | Files, by their most frames |
+|---|---|---|---|---|
+| VoiceBank+DEMAND, clean / noisy (824 each) | 99.9% / 99.8% | 0.0% / 0.0% | 0.1% / 0.2% | 823 / 822 speech, 1 / 2 noise |
+| the same in white noise, 20 / 10 / 5 dB (275 each) | 99.6% / 99.6% / 98.9% | 0.0% | 0.4% / 0.4% / 1.1% | 274 / 274 / 273 speech, the rest noise |
+| the same in pink noise, 20 / 10 / 5 dB | 99.6% / 99.4% / 99.4% | 0.0% | 0.4% / 0.6% / 0.6% | 274 speech each, 1 noise |
+| over a music bed 20 / 15 / 10 dB down (275 each) | 99.6% / 99.3% / 98.6% | 0.4% / 0.7% / 1.4% | 0.0% | 274 / 274 / 272 speech, the rest music |
+| ten home narrations (Rooms) | 99.9% | 0.0% | 0.1% | 10 speech |
+| VocalSet, spoken excerpts (10) | 98.2% | 1.8% | 0.0% | 10 speech |
+| MUSDB18 test previews, songs (50) | 0.0% | 100% | 0.0% | 50 music |
+| the same, accompaniment only (50) | 0.0% | 100% | 0.0% | 50 music |
+| Slakh2100 mixes 11 to 20 | 0.0% | 100% | 0.0% | 10 music |
+| the four repair pieces | 0.0% | 95.7% | 4.3% | 3 music, 1 noise |
+| the programmes (8), speech and music in turn | 53.3% | 46.7% | 0.0% | |
+| MUSDB18 vocal stems (50) | 38.1% | 57.5% | 4.4% | 28 music, 19 speech, 3 noise |
+| VocalSet sung phrases (20) / long tones (10) | 26.8% / 11.5% | 66.4% / 67.8% | 6.8% / 20.7% | 14 music, 6 speech / 8 music, 1 speech, 1 noise |
+| DEMAND noise alone (noisy − clean, 824) | 13.6% | 7.8% | 78.6% | 637 noise, 120 speech, 67 music |
+
+Speech is named speech and music music wherever the input is one of them (98.2% of the frames or more). A voice singing alone is either. What is neither is called noise four frames in five, speech or music otherwise: of DEMAND's noises alone, 187 of 824 files are named for a kind they are not, so its `'noise'` is the weak answer of the three.
+
 **Accuracy**, on labelled sets (`python scripts/accuracy.py guard-sets`, `node scripts/accuracy.mjs guard train|test`): the share of active 10 ms frames passed (within 40 dB of the loudest). The constants (one patch per 100 ms, the streaming bound, prior and hysteresis) were chosen on the training sets: VoiceBank+DEMAND's training speakers, the MUSDB18 training previews, Slakh2100 mixes 1 to 10, VocalSet singers 1 to 5, the Spoken Wikipedia narrations not in Rooms; the test sets below were run once. Beds: clean utterances over a song's accompaniment (the MUSDB18 stems but the vocals) 20, 15 and 10 dB under the speech; hiss: white and pink Gaussian noise at 20, 10 and 5 dB SNR. Programmes: 8 sequences of six segments, speech (five utterances of one kind, or 15 s of narration) and music (up to 20 s of a song, its accompaniment or a Slakh mix) in turn, scored 0.5 s or more from each cut.
 
 | Test set | Frames | Passed, offline (DeepFilterNet3) | Passed, streaming (RNNoise) |

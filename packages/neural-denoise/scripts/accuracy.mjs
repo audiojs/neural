@@ -21,6 +21,9 @@
 //                               (DeepFilterNet3's) and streaming (RNNoise's), and the files mostly passed; per programme
 //                               set, speech frames enhanced and music frames passed, 0.5 s either side of each cut left out,
 //                               and the median delay of each switch
+//   node scripts/accuracy.mjs kinds train|test         what segments() names the same sets: the share of each set's active
+//                               frames named speech, music and noise (ina's own decision, no prior for speech), and its
+//                               files by the kind most of their active frames have
 //
 // Data. VoiceBank+DEMAND (Valentini-Botinhao 2017, CC BY 4.0, doi:10.7488/ds/2117):
 // https://datashare.ed.ac.uk/bitstream/handle/10283/2791/{clean,noisy}_testset_wav.zip, MD5 34eb1c0b… and
@@ -45,7 +48,7 @@ import resample from '@audio/resample-sinc'
 import lena from 'audio-lena/raw'
 import denoise, { load } from '../denoise.js'
 import { enhance, level, LEVEL } from '../deepfilter.js'
-import { guardNet, offline, online } from '../guard.js'
+import { guardNet, states, patchOf, offline, online } from '../guard.js'
 
 const DATA = path.join(os.homedir(), '.cache', 'audiojs', 'data')
 
@@ -218,13 +221,33 @@ async function guard(split) {
 	}
 }
 
+// what segments() names each labelled set: ina's own decision (no prior for speech), a frame its nearest patch's
+// state: the share of the set's active frames named speech, music and noise, and its files by the kind most of
+// their active frames have
+async function kinds(split) {
+	let nn = await guardNet(), dir = path.join(DATA, 'guard'), pct = (a, b) => (100 * a / b).toFixed(1).padStart(5)
+	for (let set of readdirSync(dir).filter(s => s.startsWith(split + '-')).sort()) {
+		let rate = +readFileSync(path.join(dir, set, 'rate'), 'utf8'), files = ls(path.join(dir, set), '.f32'), frames = [0, 0, 0], most = [0, 0, 0]
+		for (let f of files) {
+			let x = f32(path.join(dir, set, f))
+			if (rate !== 48000) x = resample(x, { from: rate, to: 48000 })
+			let A = activeFrames(x), st = states(x, nn, 0), c = [0, 0, 0]
+			for (let g = 0; g < A.length; g++) if (A[g]) c[st[patchOf(g, st.length)]]++
+			c.forEach((v, k) => frames[k] += v); most[c.indexOf(Math.max(...c))]++
+		}
+		let n = frames[0] + frames[1] + frames[2]
+		console.log(`${set.padEnd(15)} frames: speech ${pct(frames[0], n)}%  music ${pct(frames[1], n)}%  noise ${pct(frames[2], n)}%   files mostly speech ${String(most[0]).padStart(3)}, music ${String(most[1]).padStart(3)}, noise ${String(most[2]).padStart(3)} of ${files.length}`)
+	}
+}
+
 let [what, systems, shard = '0/1'] = process.argv.slice(2), vb = what && voicebank(what), [k, n] = shard.split('/').map(Number)
 if (vb) await each(vb[0].filter((_, i) => i % n === k), systems.split(','), vb[1])
 else if (what === 'guard') await guard(systems)
+else if (what === 'kinds') await kinds(systems)
 else if (what === 'music') await each(music().filter((_, i) => i % n === k), systems.split(','), path.join(DATA, 'repair', 'out-neural'))
 else if (what === 'rooms') {
 	let dir = path.join(DATA, 'spoken')
 	let inputs = Object.keys(ROOMS).map(name => [name, 48000, () => f32(path.join(dir, name + '.f32'))])
 	inputs.push(['lena', 48000, () => resample(new Float32Array(lena), { from: 44100, to: 48000 })])
 	await each(inputs, ['raw', 'omlsa', 'enhance-denoise', 'rnnoise', 'rnnoise-limit16', 'rnnoise-guard', 'dfn3-upstream', 'dfn3', 'dfn3-limit18', 'dfn3-0.2-limit18', 'dfn3-limit12', 'dfn3-guard'].filter(s => systems ? systems.split(',').includes(s) : true), path.join(dir, 'out'))
-} else console.log('usage: node scripts/accuracy.mjs vbdemand|vbclean|vbtrain|vbtrain-clean|SET@RATE|SET-lp16k|music SYSTEMS [SHARD/N] | rooms [SYSTEMS] | guard train|test')
+} else console.log('usage: node scripts/accuracy.mjs vbdemand|vbclean|vbtrain|vbtrain-clean|SET@RATE|SET-lp16k|music SYSTEMS [SHARD/N] | rooms [SYSTEMS] | guard train|test | kinds train|test')
