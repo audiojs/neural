@@ -597,15 +597,21 @@ for (let [name, minDb] of Object.entries(COMPACT)) {
 // ------------------------------------------------------------------- Speed
 
 // CPU time of this process: on a shared machine wall time measures the scheduler as much as the
-// code (the same run takes 8 to 20 s of wall time at a load average of 50).
-test('speed — mock pipeline (STFT + Wiener + iSTFT), 60 s stereo < 4 s of CPU', async () => {
+// code (the same run takes 8 to 20 s of wall time at a load average of 50). Read against the CPU
+// time of the transforms the pipeline is made of (the package's stft and istft over the same signal:
+// 2 channels in, 2 targets of 2 channels out), since seconds hold on the machine they were read on
+// only; each the least of three runs, since one run reads the collector and the neighbours' load
+// with the code. The line is half as much again as the largest ratio this test prints on Node 20
+// to 25, macOS and Linux
+test('speed — mock pipeline (STFT + Wiener + iSTFT), 60 s stereo in at most 4.2 times the CPU of its transforms', async () => {
 	let fs = 44100, N = fs * 60, x = sine([90, 300], 0.3, fs, N)
 	let session = async spec => spec === 'b' ? bandMaskSession(0, 250, 4096, fs) : bandMaskSession(250, fs / 2, 4096, fs)
-	let c0 = process.cpuUsage(), t0 = performance.now()
-	await separate([x, x], { sampleRate: fs, modelType: 'mask', model: { bass: 'b', vocal: 'v' }, session, wiener: 1, chunk: 30, overlap: 2 })
-	let { user, system } = process.cpuUsage(c0), cpu = (user + system) / 1e6
-	console.log(`  (60 s stereo, 2 targets, wiener:1: ${cpu.toFixed(2)} s CPU, ${((performance.now() - t0) / 1000).toFixed(2)} s wall)`)
-	ok(cpu < 4, `${cpu.toFixed(2)} s CPU`)
+	let cpu = async f => { let c = process.cpuUsage(); await f(); let { user, system } = process.cpuUsage(c); return (user + system) / 1e6 }
+	let least = async f => Math.min(await cpu(f), await cpu(f), await cpu(f))
+	let pipe = await least(() => separate([x, x], { sampleRate: fs, modelType: 'mask', model: { bass: 'b', vocal: 'v' }, session, wiener: 1, chunk: 30, overlap: 2 }))
+	let own = await least(() => { for (let c = 0; c < 2; c++) { let fr = stft(x); for (let t = 0; t < 2; t++) istft(fr, { length: N }) } })
+	console.log(`  (60 s stereo, 2 targets, wiener:1: ${pipe.toFixed(2)} s CPU, its transforms ${own.toFixed(2)} s: ${(pipe / own).toFixed(2)} times)`)
+	ok(pipe < 4.2 * own, `${(pipe / own).toFixed(2)} times the CPU of its transforms`)
 })
 
 // --------------------------------------------------------------- input errors
