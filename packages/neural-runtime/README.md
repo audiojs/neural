@@ -56,7 +56,7 @@ Neither `onnxruntime-node` nor `onnxruntime-web` (1.17 or later) is a hard depen
 |---|---|
 | `load(model, opts?)` | → `Promise<Session>` — `model`: URL string \| `Uint8Array` \| `ArrayBuffer` |
 | `tensor(data, dims, type?)` | → plain `Tensor`; `type` inferred from `data`'s constructor when omitted |
-| `backends()` | → `Promise<string[]>` — backends usable in this environment |
+| `backends()` | → `Promise<string[]>` — backends usable in this environment. In Node `'webgpu'` is listed where `onnxruntime-node` has the provider and a GPU adapter answers it, asked once a process (on a machine with none, a CI runner or a server, the provider prints its own warning to stderr then); asked for by name there, `load(model, { backend: 'webgpu' })` rejects with "backend 'webgpu' found no GPU adapter on this machine" |
 | `fetchModel(url, opts?)` | → `Promise<Uint8Array>` — cached fetch with progress |
 | `fetchJson(url, opts?)` | → `Promise<unknown>` — same cache/progress path, `JSON.parse`d |
 

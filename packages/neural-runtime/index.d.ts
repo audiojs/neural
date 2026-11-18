@@ -63,7 +63,7 @@ export function load(model: string | Uint8Array | ArrayBuffer, opts?: LoadOption
 /** Build a plain tensor; infers `type` from `data`'s constructor when omitted (Float32Array → 'float32', Int32Array → 'int32', BigInt64Array → 'int64', Uint8Array → 'uint8', string[] → 'string'). */
 export function tensor(data: Tensor['data'], dims: number[], type?: TensorType): Tensor
 
-/** Backends this environment can run: Node → ['node'] (+ 'webgpu', 'coreml' where onnxruntime-node has them as providers); browser → ['wasm'] (+ 'webgpu' when navigator.gpu gives an adapter that is no fallback). */
+/** Backends this environment can run: Node → ['node'] (+ 'coreml' where onnxruntime-node has the provider, 'webgpu' where it has it and a GPU adapter answers: asked once a process); browser → ['wasm'] (+ 'webgpu' when navigator.gpu gives an adapter that is no fallback). */
 export function backends(): Promise<Backend[]>
 
 /** Cached fetch with progress. Also the primitive fetchJson uses for tokenizer/config siblings. */

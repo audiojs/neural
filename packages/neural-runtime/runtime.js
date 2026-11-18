@@ -84,10 +84,18 @@ function ioMeta(session, kind) {
     : { name: m.name ?? names[i] }))
 }
 
+// In Node a provider is listed by onnxruntime-node's build, whether or not the machine has a GPU: whether its WebGPU
+// provider finds an adapter is asked once a process, by a session on the smallest graph (y = 2x + 1)
+const PROBE = 'CAgSFmF1ZGlvanMtbmV1cmFsLXJ1bnRpbWU6hwEKFgoBeAoDdHdvEgJ4dBoDbXVsIgNNdWwKFgoCeHQKA29uZRIBeRoDYWRkIgNBZGQSC3NjYWxlLXNoaWZ0Kg0QASIEAAAAQEIDdHdvKg0QASIEAACAP0IDb25lWhQKAXgSDwoNCAESCQoHEgViYXRjaGIUCgF5Eg8KDQgBEgkKBxIFYmF0Y2hCBAoAEA0='
+let adapter
+const nodeGpu = ort => adapter ??= ort.InferenceSession.create(Uint8Array.from(atob(PROBE), c => c.charCodeAt(0)), { executionProviders: ['webgpu'] })
+  .then(s => (s.release?.(), true), () => false)
+
 // backends() → what onnx runtime this environment can actually use.
 export async function backends() {
   if (isNode) {
     let ort = await getOrt('node').catch(() => null), have = new Set((ort?.listSupportedBackends?.() ?? []).map(b => b.name))
+    if (have.has('webgpu') && !await nodeGpu(ort)) have.delete('webgpu')
     return ['node', ...[...NODE_EPS].filter(b => have.has(b))]
   }
   // a GPU adapter, not a fallback one (Chromium's SwiftShader, WebGPU on the CPU, slower than wasm)
@@ -124,6 +132,8 @@ export async function load(model, opts = {}) {
   try {
     session = await ort.InferenceSession.create(bytes, sessionOpts)
   } catch (err) {
+    // asked for by name on a machine with no GPU, or no driver for one: said as that
+    if (backend === 'webgpu' && /Failed to get a WebGPU adapter/.test(err.message)) throw new Error(`neural-runtime: backend 'webgpu' found no GPU adapter on this machine (no GPU, or no driver for one) — ${err.message}`)
     throw new Error(`neural-runtime: failed to load model — ${err.message}`)
   }
 

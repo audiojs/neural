@@ -118,14 +118,19 @@ test('load — bad model bytes rejects with a clear message', async () => {
   await rejects(() => load(new Uint8Array([1, 2, 3, 4, 5])), /neural-runtime: failed to load model/)
 })
 
-// In Node, 'webgpu' is onnxruntime-node's WebGPU provider (Dawn): the same answer as the CPU's; 'wasm' a browser's alone
-test("load — backend 'webgpu' in Node runs onnxruntime-node's WebGPU provider; 'wasm' rejects naming the requirement", async t => {
-  if (!(await backends()).includes('webgpu')) return t?.skip?.('no WebGPU provider in this onnxruntime-node')
-  let cpu = await load(SCALE), gpu = await load(SCALE, { backend: 'webgpu' })
-  is(gpu.backend, 'webgpu')
-  let x = tensor(Float32Array.from([1, 2, 3]), [3])
-  is([...(await gpu.run({ x })).y.data], [...(await cpu.run({ x })).y.data])
-  cpu.free(); gpu.free()
+// In Node, 'webgpu' is onnxruntime-node's WebGPU provider (Dawn): the same answer as the CPU's; 'wasm' a browser's alone.
+// The build lists the provider whether or not the machine has a GPU (a CI runner has none): backends() lists it only
+// where an adapter answers, and asked for by name where none does, load() says that and nothing else
+test("load — backend 'webgpu' in Node runs onnxruntime-node's WebGPU provider where a GPU answers, and says so where none does; 'wasm' rejects naming the requirement", async t => {
+  let built = (await import('onnxruntime-node')).listSupportedBackends?.().some(b => b.name === 'webgpu')
+  if (!built) return t?.skip?.('no WebGPU provider in this onnxruntime-node')
+  if ((await backends()).includes('webgpu')) {
+    let cpu = await load(SCALE), gpu = await load(SCALE, { backend: 'webgpu' })
+    is(gpu.backend, 'webgpu')
+    let x = tensor(Float32Array.from([1, 2, 3]), [3])
+    is([...(await gpu.run({ x })).y.data], [...(await cpu.run({ x })).y.data])
+    cpu.free(); gpu.free()
+  } else await rejects(() => load(SCALE, { backend: 'webgpu' }), /neural-runtime: backend 'webgpu' found no GPU adapter on this machine/, 'no adapter here: not listed, and asked for by name it says so')
   await rejects(() => load(LINEAR, { backend: 'wasm' }), /onnxruntime-web/)
 })
 
@@ -154,7 +159,7 @@ test('tensor — infers type from data constructor, throws when ambiguous', () =
   throws(() => tensor(Float32Array.from([1]), undefined), undefined, 'dims required')
 })
 
-test('backends — Node reports \'node\', and the GPU providers onnxruntime-node has', async () => {
+test('backends — Node reports \'node\', and the GPU providers onnxruntime-node has that answer on this machine', async () => {
   let b = await backends()
   is(b[0], 'node')
   ok(b.slice(1).every(x => x === 'webgpu' || x === 'coreml'), b.join())
