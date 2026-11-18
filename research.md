@@ -74,7 +74,7 @@ Success metric per rung: **null depth**, `wet − model(dry)` in dB (report alon
 - **Probe/excitation atom**: standardized capture signal (sweeps + multi-level noise + program material) + level calibration; belongs near `@audio/measure`. NAM's input file is prior art.
 - **Null-test tooling**: ESR + null-depth report as a first-class `@audio/measure` verb — it's also the marketing artifact ("here's the null").
 - **Format**: adopt `.nam` (ecosystem of thousands of captures for free) + own JSON for grey-box chains (which is just an audiojs pipeline spec).
-- **Weights licensing** (umbrella policy): many research models are non-commercial (Demucs weights, some DeepFilterNet variants) — audit before any promise; capture-trained weights are the user's own, no such problem.
+- **Weights licensing** (umbrella policy): many research models are non-commercial (Demucs weights; not DeepFilterNet's: its README licenses "All code and model weights in this repository" MIT OR Apache-2.0 since 7b14b89, 2026-11-06) — audit before any promise; capture-trained weights are the user's own, no such problem.
 - **Time-varying capture**: worth a rung? (chorus/phaser identification is published but fiddly) — defer until amp/EQ/comp rungs null well.
 - **Defeedback relation**: classical `@audio/defeedback` stays classical (deterministic, zero-latency by design); a *captured* clone of a commercial suppressor is possible in principle but is the adaptive class — low priority, big model.
 - **Monetization tie-in** (site research): capture→jz→VST is exactly the "tax at ecosystem boundary" pro tier — free browser capture + null report, pay to compile out.
