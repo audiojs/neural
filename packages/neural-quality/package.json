@@ -1,0 +1,73 @@
+{
+  "name": "@audio/neural-quality",
+  "version": "0.1.0",
+  "description": "Speech quality with no clean reference: Microsoft's DNSMOS P.835 (SIG, BAK, OVRL, 1 to 5) as its dnsmos_local.py computes it, the network through @audio/neural-runtime",
+  "type": "module",
+  "sideEffects": false,
+  "main": "quality.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./quality.js"
+    },
+    "./audio": {
+      "types": "./audio.d.ts",
+      "default": "./audio.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "quality.js",
+    "resampy.js",
+    "audio.js",
+    "index.d.ts",
+    "audio.d.ts",
+    "scripts/*.mjs",
+    "scripts/*.py",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "dependencies": {
+    "@audio/neural-runtime": "^0.2.0"
+  },
+  "devDependencies": {
+    "audio-lena": "^3.0.1",
+    "onnxruntime-node": "^1.29.0",
+    "tst": "^9.4.0"
+  },
+  "scripts": {
+    "test": "node test.js",
+    "prepublishOnly": "node ../../../compile/tools/tested.js"
+  },
+  "keywords": [
+    "audio",
+    "ml",
+    "neural",
+    "speech-quality",
+    "mos",
+    "dnsmos",
+    "p835",
+    "non-intrusive",
+    "noise-suppression",
+    "onnx"
+  ],
+  "license": "MIT",
+  "author": "Dmitry Iv. <dfcreative@gmail.com>",
+  "contributors": [
+    "Chandan K. A. Reddy, Vishak Gopal, Ross Cutler and Microsoft Corporation (DNSMOS P.835)"
+  ],
+  "audio": "./audio.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/audiojs/neural.git",
+    "directory": "packages/neural-quality"
+  },
+  "funding": "https://github.com/sponsors/audiojs",
+  "publishConfig": {
+    "access": "public"
+  }
+}
