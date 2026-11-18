@@ -6,8 +6,8 @@
 // Render quanta (128 samples) are collected into 10 ms frames (480); the output queue starts with
 // 480 − gcd(quantum, 480) samples of silence, the least that never runs dry, so the node's latency is
 // constant: that plus RNNoise's 960 samples (1408 samples, 29.3 ms, at the 128-sample quantum).
-// processorOptions.limit (dB) caps the attenuation by mixing the input back in: 16 unless given (LIMIT),
-// 0 for none (upstream's output).
+// processorOptions.limit (dB) caps the attenuation by mixing the input back in at 10^(−limit/20): 16 unless given
+// (LIMIT); 0 takes nothing off (the input, the node's latency late), Infinity no limit (upstream's output).
 
 import { model, create, FRAME, LIMIT } from './rnnoise.js'
 
@@ -20,7 +20,9 @@ class NeuralDenoise extends AudioWorkletProcessor {
 		if (!weights) throw new Error('neural-denoise: pass processorOptions.weights (await weights())')
 		this.net = model(weights)
 		limit ??= LIMIT
-		this.lim = limit ? 10 ** (-Math.abs(limit) / 20) : 0
+		if (typeof limit !== 'number' || limit !== limit) throw new TypeError(`neural-denoise: processorOptions.limit is dB, a number from 0 (nothing taken off) to Infinity (no limit), not ${typeof limit === 'string' ? `'${limit}'` : Array.isArray(limit) ? 'an array' : String(limit)}`)
+		// a share of 0 (Infinity) skips the dry ring, as the mix would give the model's output itself
+		this.lim = 10 ** (-Math.abs(limit) / 20)
 		this.chans = []
 	}
 

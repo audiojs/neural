@@ -33,7 +33,7 @@ const f = Math.fround
 // models/DeepFilterNet3_onnx.tar.gz at d375b2d (7,983,136 bytes, sha256 c94d91f7…): enc, erb_dec, df_dec, config.ini
 export const MODEL = 'https://raw.githubusercontent.com/Rikorose/DeepFilterNet/d375b2d8309e0935d165700c91da9de862a99c31/models/DeepFilterNet3_onnx.tar.gz'
 
-// The attenuation limit, dB, that denoise() applies to this model unless given one (0: none): the most before the
+// The attenuation limit, dB, that denoise() applies to this model unless given one (Infinity: none): the most before the
 // voice itself suffers. On VoiceBank+DEMAND, DNSMOS SIG holds from 12 to 18 dB and falls past it, BAK and PESQ
 // rise; unlimited, the pauses of home narrations fall to digital silence (README, Accuracy).
 export const LIMIT = 18
@@ -205,11 +205,12 @@ export function voicing(x, T, hop) {
 // enhance(x, net, opts) → Float32Array: one channel at 48 kHz, as df.enhance.enhance(model, state, x, pad=True).
 // `gain` scales the input the network hears (its features), not the spectrum its gains and filters apply to;
 // `edge` (Hz, the input's band edge) has the ERB bands wholly above it hear white noise FILL dB under speech at LEVEL;
-// `voice` keeps sustained voicing (voicing()) the network would remove.
-export async function enhance(x, net, { limit, chunk = 1000, warmup = 300, fade = 50, gain = 1, edge = Infinity, voice = false } = {}) {
+// `voice` keeps sustained voicing (voicing()) the network would remove. `limit` (dB, none unless given) mixes the noisy
+// spectrum back at 10^(−|limit|/20) per bin, as upstream's atten_lim_db does above 0: 0 gives the input back.
+export async function enhance(x, net, { limit = Infinity, chunk = 1000, warmup = 300, fade = 50, gain = 1, edge = Infinity, voice = false } = {}) {
 	let { sr, hop, n, nbErb, nbDf, order, dfLa, convLa, widths, alpha } = net.params
 	let L = x.length, T = Math.floor((L + n) / hop), lead = order - 1 - dfLa, look = Math.max(convLa, dfLa)
-	let lim = limit != null && Math.abs(limit) > 0 ? 10 ** (-Math.abs(limit) / 20) : 0, g1 = f(gain), g2 = f(gain * gain)
+	let lim = 10 ** (-Math.abs(limit) / 20), g1 = f(gain), g2 = f(gain * gain)
 	let vo = voice && voicing(x, T, hop)
 	// per-frame store, a ring big enough for one chunk with its context
 	chunk = Math.max(1, Math.min(chunk, T)); fade = Math.min(fade, chunk)

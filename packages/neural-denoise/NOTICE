@@ -39,8 +39,9 @@ feature normalizations) and DeepFilterNet/df/{enhance,deepfilternet3,modules,mul
 
 The DeepFilterNet3 model is not included. deepfilter.js downloads it on first use from the
 DeepFilterNet repository at the same commit (models/DeepFilterNet3_onnx.tar.gz). Upstream's
-README licenses "all code in this repository" as MIT OR Apache-2.0 and states no separate terms
-for the model files; see README.md, "Licenses".
+README licenses "All code and model weights in this repository" as MIT OR Apache-2.0 since
+commit 7b14b89 (2026-11-06; at d375b2d it named "All code in this repository"); see README.md,
+"Licenses".
 
 This product includes the speech/music/noise network of inaSpeechSegmenter
 (https://github.com/ina-foss/inaSpeechSegmenter), MIT License: guard.bin holds the weights of its

@@ -12,8 +12,15 @@ export { create as rnnoise, FRAME } from './rnnoise.js'
 export { MODEL } from './deepfilter.js'
 
 const RATE = 48000, SMOOTH = 0.5
-// the attenuation limit (dB) each model gets when opts.limit is not given; 0 is upstream's output
+// the attenuation limit (dB) each model gets when opts.limit is not given; Infinity is upstream's output, 0 the input
 const LIMITS = { rnnoise: RNNOISE_LIMIT, deepfilternet3: DFN_LIMIT }
+
+// share(limit) → the share of the input a limit of `limit` dB mixes back, 10^(−|limit|/20) at every value: 1 at 0, 0 at
+// Infinity. A limit that is no number is refused, not read as some setting
+const share = limit => {
+	if (typeof limit !== 'number' || limit !== limit) throw new TypeError(`neural-denoise: limit is dB, a number from 0 (nothing taken off) to Infinity (no limit), not ${typeof limit === 'string' ? `'${limit}'` : Array.isArray(limit) ? 'an array' : String(limit)}`)
+	return 10 ** (-Math.abs(limit) / 20)
+}
 
 // weights() → the bundled RNNoise weights (upstream's weight blob, 3,544,320 bytes), for the worklet; beside the model in
 // rnnoise.js, so the audio.js manifest reaches them without this module's DeepFilterNet3 and its ONNX runtime
@@ -47,13 +54,14 @@ export default async function denoise(audio, opts = {}) {
 	let handle = typeof opts.model === 'object' && opts.model ? opts.model : await load(opts.model, opts)
 	try {
 		let out = [], limit = opts.limit ?? LIMITS[handle.model], nn = music === 'pass' ? await guardNet() : null, dfn = handle.model !== 'rnnoise'
+		share(limit)   // a limit that is no number fails here, before the model runs
 		for (let ch of channels) {
 			let x = rate === RATE ? Float32Array.from(ch) : resample(Float32Array.from(ch), { from: rate, to: RATE }), y, pass
 			// RNNoise decides as its stream does (guard.js online()), DeepFilterNet3 with the whole input in view
 			if (!dfn) ({ y, pass } = rnnoiseOffline(x, handle.net, limit, nn))
 			else {
 				pass = nn && offline(x, nn)
-				y = pass?.every(Boolean) ? x : await enhance(x, handle.net, { ...opts, limit: 0, gain: 10 ** ((LEVEL - level(x)) / 20), edge: bandEdge(ch, rate), voice: true })
+				y = pass?.every(Boolean) ? x : await enhance(x, handle.net, { ...opts, limit: Infinity, gain: 10 ** ((LEVEL - level(x)) / 20), edge: bandEdge(ch, rate), voice: true })
 			}
 			if (rate !== RATE) y = fit(resample(y, { from: RATE, to: rate }), ch.length)
 			if (pass) y = mix(y, ch, gains(pass, x.length, dfn), rate)
@@ -77,11 +85,13 @@ export default async function denoise(audio, opts = {}) {
  * (Cohen & Berdugo 2001: G_H1^p · G_min^(1−p)): p per 10 ms frame, speech in y (speech()), a = cap^p · floor's^(1−p).
  * The noise: its mean power over the 0.5 s around each frame, against the voice's level, the louder half of y's 50 ms
  * frames (level()); a interpolated between frames. Where x and y agree (music the guard passed) the output is y bit for
- * bit. limit 0: y itself, the model's whole removal; floor 0: a constant 10^(−limit/20), as before 0.5. denoise()
- * applies it to DeepFilterNet3; `audio`'s deepfilter op to the unlimited output it keeps.
+ * bit. limit Infinity: cap 0, y itself, the model's whole removal; limit 0: cap 1, nothing taken under the voice, and in
+ * its pauses only what the floor takes; floor 0: a constant 10^(−limit/20), as before 0.5 (with limit 0, x itself).
+ * denoise() applies it to DeepFilterNet3; `audio`'s deepfilter op to the unlimited output it keeps.
  */
 export function mixback(x, y, { limit = DFN_LIMIT, floor = FLOOR, sampleRate = RATE } = {}) {
-	let n = x.length, out = new Float32Array(n), cap = limit ? 10 ** (-Math.abs(limit) / 20) : 0
+	let n = x.length, out = new Float32Array(n), cap = share(limit)
+	// cap 0: what the arithmetic below gives, y + 0·(x − y), y itself
 	if (!cap) { out.set(y.subarray(0, n)); return out }
 	if (!floor) { for (let i = 0; i < n; i++) out[i] = y[i] + cap * (x[i] - y[i]); return out }
 	// the noise's energy per frame, summed (c[k]: frames before k), and the frames' mean over the window around each
@@ -140,10 +150,10 @@ export async function guard(x, sampleRate = RATE) {
  * segments(x, sampleRate) → what the input is, stretch by stretch: [{ kind, start, end }], kind 'speech', 'music' or
  * 'noise', in seconds, in order and end to end from 0 to the input's length. Ina's segments over the whole input, as
  * the classifier itself decides them: guard.js states() with no prior for speech (that is the guard's, for a voice
- * under a bed). What counts as what follows its training, French radio and TV: speech over a music bed is speech, a
- * song is music, its singer included. A change falls on the 10 ms frame whose nearest patch changes, a patch every
- * 100 ms. Digital silence takes the kind around it; an input of nothing but silence, or shorter than a frame, has no
- * segments.
+ * under a bed). What counts as what follows its labels, as its README gives them (what it trained on is not stated):
+ * speech over a music bed is speech, a song is music, its singer included. A change falls on the 10 ms frame whose
+ * nearest patch changes, a patch every 100 ms. Digital silence takes the kind around it; an input of nothing but
+ * silence, or shorter than a frame, has no segments.
  */
 export const KINDS = ['speech', 'music', 'noise']
 export async function segments(x, sampleRate = RATE) {
@@ -181,7 +191,7 @@ function rnnoiseOffline(x, net, limit, nn) {
 		st.process(pad.subarray(i, i + FRAME), y.subarray(i, i + FRAME))
 		if (decide) on.push(decide(raw.subarray(i, i + FRAME)))
 	}
-	let lim = limit ? 10 ** (-Math.abs(limit) / 20) : 0, out = new Float32Array(L)
+	let lim = share(limit), out = new Float32Array(L)
 	for (let i = 0; i < L; i++) out[i] = (y[i + delay] / 32768) * (1 - lim) + x[i] * lim
 	return { y: out, pass: decide && Uint8Array.from(on.slice(2)) }
 }

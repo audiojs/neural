@@ -9,15 +9,17 @@
 // denoise()'s: at 48 kHz sample for sample; at other rates, with resample-sinc 1.3.0, except within 50 ms of
 // the end, where the offline resampler sees the end and a stream sees the host's trailing silence.
 //
-// limit (dB): the input is mixed back in at 10^(−limit/20), so noise drops by at most `limit`; 0 lifts it
-// (denoise()'s option, DeepFilterNet's atten_lim_db). The default is denoise()'s, 16 dB (rnnoise.js LIMIT):
-// unlimited, RNNoise's current model gates clean speech and removes the voice on some noisy files; 16 is the
-// most before the voice itself suffers (README, Accuracy). limit declares no `smoothing`: 0, none, is where the share
-// jumps (it nears 1 as the limit nears 0), so a host's ramp in dB from 100 to 0 would pass through limits that mix
-// back all of the input, 56 dB over either end on noise; a host's automation curve into or out of 0 passes through
-// them all the same, so declaring none spares a jump only. So a host hands a jump as it is, and the share glides
-// (slide(), below): from the share in force at the call that brings the value, in a straight line over 20 ms to the
-// new one, carried sample by sample across calls, the same samples however the host cuts them. Each input sample takes
+// limit (dB): the most RNNoise may take off. The input is mixed back in at a = 10^(−limit/20) at every value (share()),
+// so noise drops by at most `limit`: at 0, a = 1 and the output is the input, the latency late (at 48 kHz its samples
+// themselves; at other rates as the two converters carry it to 48 kHz and back); at the top, 100, a = 10^−5, RNNoise's
+// output with the input 100 dB under it mixed in; denoise() and the worklet take Infinity, a = 0, RNNoise's output
+// alone (README, The limit's scale). The default is denoise()'s, 16 dB (rnnoise.js LIMIT): unlimited, RNNoise's current model gates
+// clean speech and removes the voice on some noisy files; 16 is the most before the voice itself suffers (README,
+// Accuracy). The share falls as the limit rises, over the whole range, so a host's ramp or automation curve from one
+// value to another passes only through shares between theirs. limit declares no `smoothing`: a host hands a jump as it
+// is, and the share glides (slide(), below): from the share in force at the call that brings the value, in a straight
+// line over 20 ms to the new one, carried sample by sample across calls, the same samples however the host cuts them,
+// where a host's ramp would hand a value a call and so shift the output with its cuts. Each input sample takes
 // the share in force as it arrives: the mix is made at 48 kHz, frame by frame, of the input and of RNNoise's output to
 // it, so a change is heard the latency later, on the input it came with. At 48 kHz each output sample is the two
 // renders the values either side of a jump give held, mixed by the line, up to float32's rounding (test.js bounds it,
@@ -40,7 +42,8 @@
 // 2.0058 of a tone's RMS. RNNoise passes that ring ungated where it takes it for voice or for silence (a quiet DC
 // step, a low tone) and less where it gates it (its gains are at most 1, its pitch filter keeps each band's energy),
 // so the denoised part, (1 − a) of the output with a the limit's share, is 60 dB under the input's level
-// ln(1000·2.0058·(1 − a)) / −ln r samples at 48 kHz on: 79.0 ms at limit 0, 77.3 ms at the default 16. In seconds it
+// ln(1000·2.0058·(1 − a)) / −ln r samples at 48 kHz on: 79.0 ms at the top, 100, 77.3 ms at the default 16, and none
+// at 0, where no part of the output is RNNoise's (1 − a = 0). In seconds it
 // is the same at every host rate: the biquad runs at 48 kHz, and the rest rings for less, the 20 ms window's
 // overlap-add 7 ms past an edge, the resamplers' kernels on the edge of the dry share (which stops with the input)
 // T₁ + T₂ frames, 32 at 8 to 44.1 kHz and 64 at 96, under the contract's 128; the guard's gain only scales signals
@@ -85,10 +88,10 @@ const DECAY = -Math.log(Math.sqrt(Math.fround(0.996))), ENVELOPE = 1.4183 * Math
 /** Seconds after the input stops until the output stays 60 dB under its level, at `limit` dB */
 const tail = limit => Math.max(0, Math.log(1e3 * ENVELOPE * (1 - share(limit))) / DECAY / RATE)
 
-/** The share of the input a limit of v dB mixes back, 10^(−|v|/20), 0 at 0: the power made either way, and the sign put
- *  on the divisor, so that no arm and no kind of number (a negated whole number, −0) is first taken at a value a stream
- *  brings late */
-const share = v => { let p = 10 ** (Math.abs(v) / -20); return v ? p : 0 }
+/** The share of the input a limit of v dB mixes back, 10^(−|v|/20) at every value: 1 at 0, 10^−5 at 100, 0 at Infinity.
+ *  No arm, and the sign put on the divisor, so that no path and no kind of number (a negated whole number) is first
+ *  taken at a value a stream brings late */
+const share = v => 10 ** (Math.abs(v) / -20)
 /** A setting's limit: a host's Float32Array of one, a number, or none (the default) */
 const limitOf = params => { let l = params?.limit; return l?.[0] ?? l ?? LIMIT }
 
@@ -351,8 +354,8 @@ export const rnnoise = (ctx) => {
 		if (!inp || !inp.length) return
 		let n = inp[0].length
 		if (n > max || inp.length > chans.length) throw beyond(n, inp.length, max, chans.length)
-		// the share glided, not the dB value: 0 is none, so a line in dB into or out of 0 would pass through limits whose
-		// share nears 1
+		// the share glided, not the dB value: the output is affine in the share, so along a line in it the output is the
+		// renders the two values give held, mixed by the line
 		slide(lim, params.limit, shares, n)
 		let pass = params.music !== 'enhance'
 		for (let c = 0; c < inp.length; c++) run(chans[c], inp[c], out[c], shares, pass)

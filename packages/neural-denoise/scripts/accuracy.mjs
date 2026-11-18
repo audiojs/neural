@@ -92,17 +92,17 @@ const CLASSICAL = ['omlsa', 'wiener', 'specsub', 'enhance-denoise', 'enhance']
 const run = fx => async (x, rate) => (await fx(audio.from([x], { sampleRate: rate })).read())[0].subarray(0, x.length)
 // the rows before 0.4 hear music as noise (music: 'enhance'); -guard rows are 0.4's defaults, music passed
 const SYSTEMS = {
-	'rnnoise': (x, rate) => denoise(x, { sampleRate: rate, model: handles.rnnoise, limit: 0, music: 'enhance' }),
-	'rnnoise-little': (x, rate) => denoise(x, { sampleRate: rate, model: handles.little, limit: 0, music: 'enhance' }),
+	'rnnoise': (x, rate) => denoise(x, { sampleRate: rate, model: handles.rnnoise, limit: Infinity, music: 'enhance' }),
+	'rnnoise-little': (x, rate) => denoise(x, { sampleRate: rate, model: handles.little, limit: Infinity, music: 'enhance' }),
 	'rnnoise-limit16': (x, rate) => denoise(x, { sampleRate: rate, model: handles.rnnoise, music: 'enhance' }),
 	'rnnoise-guard': (x, rate) => denoise(x, { sampleRate: rate, model: handles.rnnoise }),
-	'dfn3-upstream': (x, rate) => rate === 48000 ? enhance(x, handles.dfn3.net, { limit: 0 }) : null,
-	'dfn3': (x, rate) => denoise(x, { sampleRate: rate, model: handles.dfn3, limit: 0, music: 'enhance' }),
+	'dfn3-upstream': (x, rate) => rate === 48000 ? enhance(x, handles.dfn3.net) : null,
+	'dfn3': (x, rate) => denoise(x, { sampleRate: rate, model: handles.dfn3, limit: Infinity, music: 'enhance' }),
 	'dfn3-limit18': (x, rate) => denoise(x, { sampleRate: rate, model: handles.dfn3, music: 'enhance' }),
 	'dfn3-limit12': (x, rate) => denoise(x, { sampleRate: rate, model: handles.dfn3, limit: 12, music: 'enhance' }),
 	'dfn3-guard': (x, rate) => denoise(x, { sampleRate: rate, model: handles.dfn3 }),
-	'dfn3-chunk': (x, rate) => denoise(x, { sampleRate: rate, model: handles.dfn3, limit: 0, chunk: 100, warmup: 100, fade: 20, music: 'enhance' }),
-	'dfn3-0.2': (x, rate) => before(x, rate, handles.dfn3, 0),
+	'dfn3-chunk': (x, rate) => denoise(x, { sampleRate: rate, model: handles.dfn3, limit: Infinity, chunk: 100, warmup: 100, fade: 20, music: 'enhance' }),
+	'dfn3-0.2': (x, rate) => before(x, rate, handles.dfn3, Infinity),
 	'dfn3-0.2-limit18': (x, rate) => before(x, rate, handles.dfn3, 18),
 	'raw': x => x,
 	'omlsa': run(a => a.omlsa()),

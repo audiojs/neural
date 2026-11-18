@@ -4,12 +4,12 @@
 // default limits. What tells music from speech here is inaSpeechSegmenter's speech/music/noise CNN (D. Doukhan,
 // J. Carrive, F. Vallet, A. Larcher, S. Meignier, "An Open-Source Speaker Gender Detection Framework for Monitoring
 // Gender Equality", ICASSP 2018; ina-foss/inaSpeechSegmenter, MIT; its 'smn' engine, keras_speech_music_noise_cnn.hdf5),
-// trained on French radio and TV, where it labels speech over a music bed as speech and songs as music. Its input as ina
-// computes it (sidekit's mfcc() at ina's settings): 16 kHz audio, pre-emphasis 0.97 within each frame, 25 ms Hann
-// frames every 10 ms, a 512-point power spectrum, 24 triangular HTK-mel filters from 100 Hz to 8 kHz, natural log. The
-// lowest 21 bands over 68 frames (0.68 s) make a patch, standardized by its own mean and deviation, so the level
-// doesn't matter. Four convolutions and four dense layers give speech, music and noise; 782,403 weights, in guard.bin
-// as float16 (1.56 MB, scripts/guard.py).
+// which labels speech over music or over noise as speech and singing voice as music (its README, which does not say
+// what it trained on). Its input as ina computes it (sidekit's mfcc() at ina's settings): 16 kHz audio, pre-emphasis
+// 0.97 within each frame, 25 ms Hann frames every 10 ms, a 512-point power spectrum, 24 triangular HTK-mel filters
+// from 100 Hz to 8 kHz, natural log. The lowest 21 bands over 68 frames (0.68 s) make a patch, standardized by its own
+// mean and deviation, so the level doesn't matter. Four convolutions and four dense layers give speech, music and noise;
+// 782,403 weights, in guard.bin as float16 (1.56 MB, scripts/guard.py).
 //
 // A patch every STEP frames (ina takes one every 2; on the training material every 10 decides the same, at a fifth of
 // the work). Offline, the classes become segments as ina makes them, by Viterbi over the whole input: three states,

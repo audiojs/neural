@@ -41,8 +41,8 @@ export async function weights() {
 }
 
 export const FRAME = 480
-// The attenuation limit, dB, that denoise(), the worklet and the audio atom apply unless given one (0:
-// none, upstream's output): the most before the voice itself suffers. Unlimited, the model gates speech
+// The attenuation limit, dB, that denoise(), the worklet and the audio atom apply unless given one (Infinity:
+// none, upstream's output; 0: the input): the most before the voice itself suffers. Unlimited, the model gates speech
 // that has nothing to remove (clean word ends 37 dB down) and removes the voice on some noisy files. On the
 // VoiceBank+DEMAND training subset (504 files) DNSMOS SIG holds from 14 to 16 dB and falls past it, and 16
 // is the most at which no file loses more than 0.2 STOI (21 files unlimited, 3 at 20) (README, Accuracy).

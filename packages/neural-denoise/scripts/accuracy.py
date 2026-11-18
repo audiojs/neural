@@ -1,7 +1,8 @@
 # Scores for the Accuracy section, from the outputs scripts/accuracy.mjs writes.
 #   python scripts/accuracy.py prepare                     the band-limited VoiceBank+DEMAND inputs and the MUSDB18 previews
 #   python scripts/accuracy.py SET SYSTEM [SYSTEM...]      SET: vbdemand | vbtrain, or either @RATE or -lp16k (noisy: the input)
-#   python scripts/accuracy.py limits SET SYSTEM LIMITS    SYSTEM's unlimited output with the input mixed back, per limit;
+#   python scripts/accuracy.py limits SET SYSTEM LIMITS    SYSTEM's unlimited output with the input mixed back, per limit
+#                                                          (dB, e.g. 12,16,20,inf: inf mixes none back);
 #                                                          each paired against the last of LIMITS, 95% intervals
 #   python scripts/accuracy.py clean SET SYSTEM [LIMITS]   SET: vbclean | vbtrain-clean: what speech with nothing to remove loses
 #   python scripts/accuracy.py music SYSTEM [SYSTEM...]    level change per band of music, chords and songs
@@ -79,12 +80,13 @@ def names(setname):
     d, cdir = vbset(setname)[:2]; return sorted(os.path.basename(p)[:-4] for p in glob.glob(f'{d}/{cdir}/*.wav'))
 
 def pair(setname, system, name, limit=None):
-    """(clean reference, input, output, rate); `limit` mixes the input back into an unlimited output"""
+    """(clean reference, input, output, rate); `limit` (dB) mixes the input back into an unlimited output at
+    10^(-limit/20): 0 gives the input, inf the output as it is"""
     d, cdir, (idir, ext), out, rate = vbset(setname)
     ref = rwav(f'{d}/{cdir}/{name}.wav'); inp = rwav(f'{d}/{idir}/{name}.wav') if ext == 'wav' else rf32(f'{d}/{idir}/{name}.f32')
     est = inp if system in ('noisy', 'raw') else rf32(f'{d}/{out}/{system}/{name}.f32')
     assert len(est) == len(inp), (system, name)
-    if limit: a = 10 ** (-limit / 20); est = est * (1 - a) + inp * a
+    if limit is not None: a = 10 ** (-abs(limit) / 20); est = est * (1 - a) + inp * a
     return ref, inp, est, rate
 
 def vb(args):
@@ -94,7 +96,7 @@ def vb(args):
     ref, _, est, rate = pair(setname, system, name, limit)
     r, e = resample_poly(ref, 1, 3), to16(est, rate); n = min(len(r), len(e)); r, e = r[:n], e[:n]
     sig, bak, ovr = dnsmos(e)
-    return dict(name=name, limit=limit or 0, pesq=pesq(16000, r, e, 'wb'), stoi=stoi(r, e, 16000, extended=False), sisdr=sisdr(r, e), sig=sig, bak=bak, ovrl=ovr)
+    return dict(name=name, limit=float('inf') if limit is None else limit, pesq=pesq(16000, r, e, 'wb'), stoi=stoi(r, e, 16000, extended=False), sisdr=sisdr(r, e), sig=sig, bak=bak, ovrl=ovr)
 
 def classes(x, fs):
     n = fs // 100; m = len(x) // n; lv = 10 * np.log10(np.sum(x[:m * n].reshape(m, n) ** 2, 1) + 1e-20)
@@ -117,7 +119,7 @@ def cleanrow(args):
     setname, system, name, limit = args
     _, x, y, fs = pair(setname, system, name, limit)
     c, n, m = classes(x, fs)
-    return dict(name=name, limit=limit or 0, sisdr=sisdr(x, y), **{k: change(x, y, v, n, m) for k, v in c.items()})
+    return dict(name=name, limit=float('inf') if limit is None else limit, sisdr=sisdr(x, y), **{k: change(x, y, v, n, m) for k, v in c.items()})
 
 BANDS = [(0, 250), (250, 1000), (1000, 4000), (4000, 8000), (8000, 16000), (16000, 22050)]
 def musicrow(args):
