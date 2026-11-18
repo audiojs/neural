@@ -1,0 +1,44 @@
+{
+  "name": "@audio/neural-restore",
+  "version": "0.1.0",
+  "description": "A voice restored to a studio take: speech or singing, English, French or Russian, recorded in a room, in noise, on a phone or through a codec, back as 48 kHz full band; one network, one pass, through @audio/neural-runtime",
+  "type": "module",
+  "sideEffects": false,
+  "main": "restore.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./restore.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "restore.js",
+    "index.d.ts",
+    "scripts/*.py",
+    "scripts/*.sh",
+    "scripts/*.mjs",
+    "scripts/HANDOUT.md"
+  ],
+  "dependencies": {
+    "@audio/neural-runtime": "^0.2.0",
+    "@audio/resample-sinc": "^1.1.2",
+    "fourier-transform": "^2.4.1"
+  },
+  "devDependencies": {
+    "onnxruntime-node": "^1.29.0",
+    "tst": "^9.4.0"
+  },
+  "scripts": {
+    "test": "node test.js",
+    "prepublishOnly": "node ../../../compile/tools/tested.js"
+  },
+  "keywords": ["audio", "ml", "neural", "speech-enhancement", "restoration", "bandwidth-extension", "dereverberation", "onnx"],
+  "license": "MIT",
+  "author": "Dmitry Iv. <dfcreative@gmail.com>",
+  "engines": { "node": ">=18" },
+  "repository": { "type": "git", "url": "git+https://github.com/audiojs/neural.git", "directory": "packages/neural-restore" },
+  "funding": "https://github.com/sponsors/audiojs",
+  "publishConfig": { "access": "public" }
+}
