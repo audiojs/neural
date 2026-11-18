@@ -44,7 +44,7 @@ class NeuralDenoise extends AudioWorkletProcessor {
 				s.frame[s.fill++] = v * 32768
 				if (this.lim) { s.dry[s.dw] = v; s.dw = (s.dw + 1) % s.dry.length }
 				if (s.fill === FRAME) {
-					s.st.process(s.frame, s.out)
+					s.st.run(s.frame, s.out)
 					for (let k = 0, w = (s.read + s.queued) % s.ring.length; k < FRAME; k++, w = (w + 1) % s.ring.length) s.ring[w] = s.out[k] / 32768
 					s.queued += FRAME; s.fill = 0
 				}

@@ -71,45 +71,62 @@ const GEMM = new Uint8Array([
 	13,0,11,32,9,65,2,106,33,9,32,9,32,6,73,13,0,11,11,
 ])
 
-/** net(bytes, { simd }) → the classifier over guard.bin; rest(p1) takes conv1's pooled output, gives [speech, music, noise]. */
+/**
+ * net(bytes, { simd }) → the classifier over guard.bin; rest(p1) takes conv1's pooled output, gives [speech, music,
+ * noise] in a Float64Array the next patch writes again. Its activations are made here, once: a patch every 100 ms in a
+ * stream allocates nothing.
+ */
 export function net(bytes, { simd = true } = {}) {
 	let u = new Uint16Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)), o = 0
 	if (u.length !== WEIGHTS) throw new Error(`neural-denoise: guard weights are ${u.length} values, want ${WEIGHTS}`)
 	let take = n => { let a = new Float32Array(n); for (let i = 0; i < n; i++) a[i] = half(u[o++]); return a }
-	let [c1, c2, c3, c4, ...dense] = LAYERS.map(s => ({ s, w: take(s.reduce((a, b) => a * b)), b: take(s[0]) }))
-	let out = dense.pop(), mm = matmul([c2, c3, c4, ...dense], simd), col = new Float32Array(12 * 5 * 1152)
+	let [c1, c2, c3, c4, ...dense] = LAYERS.map(s => { let n = s.reduce((a, b) => a * b); return { s, k: n / s[0], w: take(n), b: take(s[0]) } })
+	let out = dense.pop(), mm = matmul([c2, c3, c4, ...dense], simd)
+	// conv3 pooled 2 × 2 to [6][3][128], conv4 pooled 4 × 1 to [256]; the three classes' logits, then probabilities
+	let p3 = new Float32Array(6 * 3 * 128), p4 = new Float32Array(256), z = new Float64Array(3), prob = new Float64Array(3)
 	// conv1's kernel sums: a standardized patch (x − μ)/σ convolves to (conv(x) − μ·Σk)/σ
 	let ksum = new Float32Array(64)
 	for (let a = 0; a < 64; a++) for (let j = 0; j < 28; j++) ksum[a] += c1.w[a * 28 + j]
-	// valid convolution, channels last, through im2col: x [H][W][C] → [H − kh + 1][W − kw + 1][co], ReLU
+	// valid convolution, channels last, through im2col into the kernel's input: x [H][W][C] → [H − kh + 1][W − kw + 1][co],
+	// ReLU, in the kernel's output (mm.y)
 	function conv(x, H, W, C, l) {
-		let [co, kh, kw] = l.s, oh = H - kh + 1, ow = W - kw + 1, q = 0
-		for (let i = 0; i < oh; i++) for (let j = 0; j < ow; j++) for (let h = 0; h < kh; h++) {
-			let a = ((i + h) * W + j) * C
-			col.set(x.subarray(a, a + kw * C), q); q += kw * C
-		}
-		return [mm(l, col, oh * ow), oh, ow, co]
+		let kh = l.s[1], kw = l.s[2], oh = H - kh + 1, ow = W - kw + 1, col = mm.x, q = 0
+		for (let i = 0; i < oh; i++) for (let j = 0; j < ow; j++) for (let h = 0; h < kh; h++)
+			for (let a = ((i + h) * W + j) * C, e = a + kw * C; a < e; a++) col[q++] = x[a]
+		mm.run(l, oh * ow)
+		return mm.y
 	}
 	return {
 		c1, ksum,
 		rest(p1) {
 			for (let i = 0; i < p1.length; i++) if (p1[i] < 0) p1[i] = 0
-			let t = conv(p1, 16, 9, 64, c2)
-			t = pool(conv(...t, c3), 2, 2, 0)
-			let v = pool(conv(...t, c4), 4, 1, 0)[0]
-			for (let l of dense) v = mm(l, v, 1)
-			let z = [0, 1, 2].map(a => { let s = out.b[a]; for (let k = 0; k < 256; k++) s += out.w[a * 256 + k] * v[k]; return s })
-			let m = Math.max(...z), e = z.map(q => Math.exp(q - m)), s = e[0] + e[1] + e[2]
-			return e.map(q => q / s)
+			pool(conv(conv(p1, 16, 9, 64, c2), 14, 7, 128, c3), 12, 5, 128, 2, 2, 0, p3)
+			pool(conv(p3, 6, 3, 128, c4), 4, 1, 256, 4, 1, 0, p4)
+			let v = p4
+			for (let d = 0; d < dense.length; d++) {
+				for (let k = 0; k < 256; k++) mm.x[k] = v[k]
+				mm.run(dense[d], 1)
+				v = mm.y
+			}
+			for (let a = 0; a < 3; a++) { let s = out.b[a]; for (let k = 0; k < 256; k++) s += out.w[a * 256 + k] * v[k]; z[a] = s }
+			let m = Math.max(z[0], z[1], z[2])
+			for (let a = 0; a < 3; a++) z[a] = Math.exp(z[a] - m)
+			let s = z[0] + z[1] + z[2]
+			for (let a = 0; a < 3; a++) prob[a] = z[a] / s
+			return prob
 		},
 	}
 }
 
-// matmul(layers) → mm(l, x, n): the kernel over layer l's weights for n rows of x; wasm where WebAssembly SIMD runs
+// matmul(layers) → { x, y, run(l, n) }: the kernel over layer l's weights for n rows of x, into y; wasm where WebAssembly
+// SIMD runs, x and y then views of its memory
 function matmul(layers, simd = true) {
 	let mod = null
 	try { mod = simd && typeof WebAssembly === 'object' ? new WebAssembly.Module(GEMM) : null } catch {}
-	if (!mod) return (l, x, n) => gemm(l.w, x, l.b, l.s[0], l.w.length / l.s[0], n)
+	if (!mod) {
+		let x = new Float32Array(12 * 5 * 1152), y = new Float32Array(14 * 7 * 128)
+		return { x, y, run: (l, n) => gemm(l.w, x, l.b, l.s[0], l.k, n, y) }
+	}
 	let inst = new WebAssembly.Instance(mod), mem = inst.exports.memory, top = 0, at = new Map()
 	let alloc = n => { let p = top; top += n * 4; return p }
 	for (let l of layers) at.set(l, [alloc(l.w.length), alloc(l.b.length)])
@@ -117,17 +134,14 @@ function matmul(layers, simd = true) {
 	mem.grow(Math.ceil(top / 65536))
 	let F = new Float32Array(mem.buffer)
 	for (let l of layers) { F.set(l.w, at.get(l)[0] / 4); F.set(l.b, at.get(l)[1] / 4) }
-	return (l, x, n) => {
-		let rows = l.s[0], k = l.w.length / rows, [w, b] = at.get(l)
-		F.set(x.subarray(0, n * k), X / 4)
-		inst.exports.gemm(w, X, b, Y, rows, k, n)
-		return F.slice(Y / 4, Y / 4 + n * rows)
+	return {
+		x: new Float32Array(mem.buffer, X, 12 * 5 * 1152), y: new Float32Array(mem.buffer, Y, 14 * 7 * 128),
+		run(l, n) { let wb = at.get(l); inst.exports.gemm(wb[0], X, wb[1], Y, l.s[0], l.k, n) },
 	}
 }
 
-// gemm.wat in JS
-function gemm(w, x, b, rows, k, n) {
-	let y = new Float32Array(n * rows)
+// gemm.wat in JS, into y
+function gemm(w, x, b, rows, k, n, y) {
 	for (let p = 0; p < n; p++) for (let r = 0; r < rows; r++) {
 		let a0 = 0, a1 = 0, a2 = 0, a3 = 0, wo = r * k, xo = p * k
 		for (let c = 0; c < k; c += 4) {
@@ -137,17 +151,17 @@ function gemm(w, x, b, rows, k, n) {
 		let s = f(b[r] + f(f(a0 + a1) + f(a2 + a3)))
 		y[p * rows + r] = s > 0 ? s : 0
 	}
-	return y
 }
 
-// max pooling, window = stride = ph × pw, `pt` rows of padding on top (keras 'same' pads the first pool's rows 1 + 1)
-function pool([x, H, W, C], ph, pw, pt) {
-	let oh = Math.ceil(H / ph), ow = Math.ceil(W / pw), y = new Float32Array(oh * ow * C).fill(-Infinity)
+// max pooling of x [H][W][C] into y, window = stride = ph × pw, `pt` rows of padding on top (keras 'same' pads the
+// first pool's rows 1 + 1)
+function pool(x, H, W, C, ph, pw, pt, y) {
+	let ow = Math.ceil(W / pw)
+	y.fill(-Infinity)
 	for (let i = 0; i < H; i++) for (let j = 0; j < W; j++) {
 		let a = Math.floor((i + pt) / ph), c = Math.floor(j / pw), xo = (i * W + j) * C, yo = (a * ow + c) * C
 		for (let k = 0; k < C; k++) if (x[xo + k] > y[yo + k]) y[yo + k] = x[xo + k]
 	}
-	return [y, oh, ow, C]
 }
 
 // ------------------------------------------------ features
@@ -166,6 +180,8 @@ const TAPS = 31, LP = new Float32Array(TAPS)
 
 // sidekit's trfbank(16000, 512, 100, 8000, 0, 24): triangles evenly spaced in HTK mel, each of area 1 (the lowest 21)
 const MELS = 24, BANDS = 21, NFFT = 512, WIN = 400, HOP = 160, PATCH = 68
+// the periods a stream's frame and sample counters run modulo: lcm(PATCH, STEP), lcm(WIN, HOP)
+const gcd = (a, b) => b ? gcd(b, a % b) : a, CYCLE = PATCH * STEP / gcd(PATCH, STEP), SPAN = WIN * HOP / gcd(WIN, HOP)
 const mel = hz => 2595 * Math.log10(1 + hz / 700), hz = m => 700 * (10 ** (m / 2595) - 1)
 const FB = Array.from({ length: BANDS }, (_, i) => {
 	let edge = k => hz(mel(100) + k * (mel(8000) - mel(100)) / (MELS + 1)), [lo, c, hi] = [edge(i), edge(i + 1), edge(i + 2)]
@@ -201,13 +217,18 @@ function power(x, re, im, P) {
  * (the low-pass delays 15 samples) it is centered on sample 480·(STEP·k + 34.716) and complete once sample
  * 480·(STEP·k + 67) + 1197 is in, in 48 kHz frame STEP·k + 69. push.end() → for an input shorter than a patch, its
  * one patch, padded with its least log-mel value as ina pads.
+ * analyzer(nn, each) → push(x, from, to): x[from…to) in, each patch's [speech, music, noise] handed to each(p) as it
+ * completes, p a Float64Array of nn's that its next patch, any stream's, writes again (null for silence); push returns
+ * null. A stream allocates nothing so: its counters run modulo their periods, its least log-mel lives in a typed array.
  */
-export function analyzer(nn) {
+export function analyzer(nn, each) {
 	let hist = new Float32Array(TAPS), hn = 0, n48 = 0, s16 = new Float32Array(WIN), n16 = 0
 	let frame = new Float64Array(WIN), re = new Float64Array(NFFT), im = new Float64Array(NFFT), P = new Float64Array(NFFT / 2 + 1)
 	// the last 68 frames' log-mel, and conv1 over the 7 frames from each: [18][64], no bias
 	let M = new Float32Array(PATCH * BANDS), C = new Float32Array(PATCH * 1152), mels = new Float32Array(BANDS)
-	let p1 = new Float32Array(16 * 9 * 64), nf = 0, low = Infinity, out = [], { c1, ksum } = nn
+	let p1 = new Float32Array(16 * 9 * 64), nf = 0, low = Float64Array.of(Infinity), { c1, ksum } = nn
+	let list = null, collect = !each
+	if (collect) each = p => list.push(p && Array.from(p))
 	let row = j => (j % PATCH) * BANDS
 	function addFrame() {
 		// pre-emphasis within the frame, its first sample against itself
@@ -216,7 +237,7 @@ export function analyzer(nn) {
 		for (let b = 0; b < BANDS; b++) {
 			let { start, w } = FB[b], s = 0
 			for (let k = 0; k < w.length; k++) s += P[start + k] * w[k]
-			mels[b] = Math.log(s); low = Math.min(low, mels[b])
+			mels[b] = Math.log(s); low[0] = Math.min(low[0], mels[b])
 		}
 		addRow(mels)
 	}
@@ -233,7 +254,11 @@ export function analyzer(nn) {
 				C[o + j * 64 + a] = s
 			}
 		}
-		if (nf >= PATCH && (nf - PATCH) % STEP === 0) out.push(patch(nf - PATCH))
+		if (nf >= PATCH && (nf - PATCH) % STEP === 0) each(patch(nf - PATCH))
+		// nf counts on modulo PATCH and STEP both, past PATCH: a small integer however long the stream. It wraps by the
+		// same arithmetic every frame (below PATCH it gives nf itself), not by a branch: a branch first taken at the wrap,
+		// 4 s into the first stream, has no type feedback, and the optimized function deoptimizes there once
+		nf = (nf - PATCH) % CYCLE + PATCH
 	}
 	// the patch from frame t: standardized by the mean and deviation of its 68 × 21 values; conv1 from the shared rows,
 	// pooled 4 × 2 (the max commutes with the patch's increasing affine map), then the rest of the network
@@ -255,22 +280,26 @@ export function analyzer(nn) {
 		}
 		return nn.rest(p1)
 	}
-	function push(x) {
-		out = []
-		for (let i = 0; i < x.length; i++) {
+	function push(x, from = 0, to = x.length) {
+		if (collect) list = []
+		for (let i = from; i < to; i++) {
 			hist[hn = (hn + 1) % TAPS] = x[i]
-			if (n48++ % 3) continue
+			let keep = n48 === 0
+			n48 = n48 === 2 ? 0 : n48 + 1
+			if (!keep) continue
 			let v = 0
 			for (let k = 0; k < TAPS; k++) v += LP[k] * hist[(hn - k + TAPS) % TAPS]
 			s16[n16++ % WIN] = v
 			if (n16 >= WIN && (n16 - WIN) % HOP === 0) addFrame()
+			// n16 counts on modulo WIN and HOP both, past WIN, wrapping as nf does
+			n16 = (n16 - WIN) % SPAN + WIN
 		}
-		return out
+		return list
 	}
 	push.end = () => {
-		out = []
-		if (nf && nf < PATCH) { mels.fill(low); while (nf < PATCH) addRow(mels) }
-		return out
+		if (collect) list = []
+		if (nf && nf < PATCH) { mels.fill(low[0]); while (nf < PATCH) addRow(mels) }
+		return list
 	}
 	return push
 }
@@ -310,30 +339,51 @@ export function offline(x, nn) {
 }
 
 /**
- * online(nn) → frame(x480): the stream's decision, one 48 kHz frame at a time: true once it holds music, from the
- * patches complete in the frames so far. The output frame two before (RNNoise's delay) takes it.
+ * online(nn) → frame(x480, from, to): the stream's decision, one 48 kHz frame at a time (x, or x[from…to)): true once it
+ * holds music, from the patches complete in the frames so far. The output frame two before (RNNoise's delay) takes it.
+ * Nothing is allocated per frame: the state lives in a typed array, and the log-odds move here, in code that runs every
+ * frame, not in the sink, which runs once a patch: code that rare stays unoptimized, and there each float is an object.
  */
 export function online(nn) {
-	let a = analyzer(nn), l = 0, on = false
-	return x => {
-		for (let p of a(x)) {
-			if (!p) continue
-			l = Math.min(BOUND, Math.max(-BOUND, l + lp(p[1], FLOOR) - lp(p[0] + p[2], FLOOR) - PRIOR))
-			on = l > (on ? 0 : HYST)
+	let s = new Float64Array(5), got = false   // the log-odds of music; 1 while it holds music; the patch's classes
+	let a = analyzer(nn, p => { if (p) { s.set(p, 2); got = true } })
+	return (x, from = 0, to = x.length) => {
+		// patches complete STEP frames apart: a piece that long brings one at most
+		for (let i = from; i < to; i += STEP * 480) {
+			a(x, i, Math.min(to, i + STEP * 480))
+			if (!got) continue
+			got = false
+			let l = Math.min(BOUND, Math.max(-BOUND, s[0] + Math.log(Math.max(s[3], FLOOR)) - Math.log(Math.max(s[2] + s[4], FLOOR)) - PRIOR))
+			s[1] = +(l > (s[1] ? 0 : HYST)); s[0] = l
 		}
-		return on
+		return s[1] === 1
 	}
 }
 
 /** ramp(enhance) → next(enhance): the enhanced signal's gain for the next sample, toward 1 (enhance) or 0 (pass) over
  *  RAMP, starting at 1 or 0. */
 export function ramp(start = true) {
-	let phi = +start
-	return enhance => (phi = Math.min(1, Math.max(0, phi + (enhance ? 1 : -1) / RAMP)), .5 - .5 * Math.cos(Math.PI * phi))
+	let phi = Float64Array.of(+start), g = new Float64Array(1)
+	return enhance => (ramps(phi, enhance, g, 0, 1), g[0])
 }
 
-/** blend(g, y, x): the enhanced y at gain g, the input x at 1 − g; at 1 and 0 the one signal itself, bit for bit. */
-export const blend = (g, y, x) => g === 1 ? y : g === 0 ? x : g * y + (1 - g) * x
+/** ramps(phi, enhance, g, from, to): ramp()'s gains for samples from…to − 1 into g, all toward 1 (enhance) or 0 (pass);
+ *  its phase in phi[0], in and out */
+export function ramps(phi, enhance, g, from, to) {
+	let p = phi[0], d = (enhance ? 1 : -1) / RAMP
+	for (let i = from; i < to; i++) { p = Math.min(1, Math.max(0, p + d)); g[i] = .5 - .5 * Math.cos(Math.PI * p) }
+	phi[0] = p
+}
+
+/** blend(g, y, x): the enhanced y at gain g, the input x at 1 − g; at 1 and 0 the one signal itself, bit for bit. The
+ *  mix is made at every gain, kept or not: made only between 0 and 1, it would be first made at the first switch, seconds
+ *  into a stream, with no type feedback, and the stream's optimized loop would deoptimize there. */
+export const blend = (g, y, x) => { let m = g * y + (1 - g) * x; return g === 1 ? y : g === 0 ? x : m }
+
+/** blends(g, y, x, n): blend over the first n samples, into y */
+export function blends(g, y, x, n) {
+	for (let i = 0; i < n; i++) y[i] = blend(g[i], y[i], x[i])
+}
 
 /** gains(pass, n, centered) → Float32Array(n), the enhanced signal's gain per sample from a pass flag per 480: offline,
  *  from the first frame's and the ramps centered on each change; streaming, from 1 (nothing decided yet), the ramps

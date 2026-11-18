@@ -76,9 +76,9 @@ Each channel heard apart, 8.7 s segments every 4.35 s as `demix()` runs it (`num
 ## Weights
 
 Nothing ships in this package. `scnet-large`, `scnet`, `mrx` and `tiger` read a compact file each, `<model>.int8.onnx`
-(Size, below), and `mel-roformer` its float16 weights, `mel-roformer.fp16.onnx` (or `roformer.js`'s `mel-roformer.engine.bin`), hosted on Hugging Face
-(`audiojs/scnet-large`, `audiojs/scnet`, `audiojs/mrx`, `audiojs/tiger-dnr`, `audiojs/mel-roformer`, each with its model
-card and licence): without `weights`, `https://huggingface.co/<repo>/resolve/<revision>/<file>` at the
+(Size, below), `mel-roformer` its float16 weights, `mel-roformer.fp16.onnx` (or `roformer.js`'s `mel-roformer.engine.bin`), and `dereverb-room` its float16 weights, `dereverb-room.fp16.onnx`, hosted on Hugging Face
+(`audiojs/scnet-large`, `audiojs/scnet`, `audiojs/mrx`, `audiojs/tiger-dnr`, `audiojs/mel-roformer`, `audiojs/dereverb-room`, each with its model
+card and licence; `umxhq`, `htdemucs` and `htdemucs_ft` are not hosted, export them as below): without `weights`, `https://huggingface.co/<repo>/resolve/<revision>/<file>` at the
 revision `REVISIONS` pins, fetched once and checked against its SHA-256 (the browser keeps it in the Cache API, Node in
 the neural cache, below). Every model can also be exported from its original checkpoint:
 
@@ -264,7 +264,7 @@ let vocals = complex.vocals.map(ch => istft(ch, { length: left.length }))
 | Option | Default | |
 |---|---|---|
 | `sampleRate` | — | required unless `audio` is `{ channelData, sampleRate }` |
-| `model` | — | required. Preset `'scnet-large' \| 'scnet' \| 'umxhq' \| 'htdemucs' \| 'htdemucs_ft' \| 'mrx' \| 'tiger'` · `url \| bytes` (single target, named `'stem'`) · `{ target: url \| { url, targets }, ... }` (one graph per target, Open-Unmix's own layout; a multi-source graph contributes its own target) · `{ url, targets: [...] }` (one multi-target graph, stacks a target axis) |
+| `model` | — | required. Preset `'scnet-large' \| 'scnet' \| 'umxhq' \| 'htdemucs' \| 'htdemucs_ft' \| 'mrx' \| 'tiger' \| 'mel-roformer' \| 'dereverb-room'` · `url \| bytes` (single target, named `'stem'`) · `{ target: url \| { url, targets }, ... }` (one graph per target, Open-Unmix's own layout; a multi-source graph contributes its own target) · `{ url, targets: [...] }` (one multi-target graph, stacks a target axis) |
 | `targets` | all | the targets to return |
 | `weights` | `$AUDIO_NEURAL_CACHE` or `~/.cache/audiojs/neural` (Node); a compact preset's hosted file (`REVISIONS`) | where a preset's files are: URL, or a directory in Node |
 | `modelType` | `'openunmix'` | `'openunmix'` (magnitude out) · `'mask'` (`[0,1]` mask out, multiplied by mixture magnitude) · `'hybrid'` (demucs.onnx contract) · `'complex'` (complex spectrogram in and out, SCNet's) · `'multires'` (magnitudes at several resolutions in, masks out, MRX's) · `'waveform'` (Demucs v2-class); presets know theirs |
@@ -286,21 +286,22 @@ Mono input is duplicated to stereo internally (matching `openunmix.utils.preproc
 
 ## Precedence and licenses
 
-Open-source stem separation has these lineages; this package runs SCNet, Open-Unmix and Demucs.
+Open-source stem separation has these lineages; this package runs SCNet, Open-Unmix, Demucs, Mel-Band RoFormer, MRX, TIGER and anvuew's de-reverb.
 
 | Project | Code | Weights | |
 |---|---|---|---|
 | **Open-Unmix** (`umx`, `umxhq`) | MIT | MIT ([Zenodo](https://zenodo.org/records/3370489)-declared) | trained on MUSDB18(-HQ); this package's primary target |
 | **Open-Unmix** (`umxl`) | MIT | **CC BY-NC-SA 4.0 — non-commercial only** | despite being the `openunmix` package's own default variant name; trained on a private stems dataset (see the project [README](https://github.com/sigsep/open-unmix-pytorch#pre-trained-models)) |
-| **Demucs** (Meta; `htdemucs`, `htdemucs_ft`) | MIT | **research only**: "The model weights are not covered by the MIT license, and are provided only for scientific purposes" (the author in [#327](https://github.com/facebookresearch/demucs/issues/327), 2022; again in [#508](https://github.com/facebookresearch/demucs/issues/508), 2023; the Hugging Face copies he published in 2026 had their `license: mit` tag removed) | trained on MUSDB18-HQ plus 800 songs; the repository is archived, maintained at [adefossez/demucs](https://github.com/adefossez/demucs) |
+| **Demucs** (Meta; `htdemucs`, `htdemucs_ft`) | MIT | **research only**: "The model weights are not covered by the MIT license, and are provided only for scientific purposes" (the author in [#327](https://github.com/facebookresearch/demucs/issues/327), 2022; again in [#508](https://github.com/facebookresearch/demucs/issues/508), 2023; the Hugging Face copies he published in 2026 had their `license: mit` tag removed; his README at [adefossez/demucs](https://github.com/adefossez/demucs#license) now: "The license of the weights is not clear") | trained on MUSDB18-HQ plus 800 songs; the repository is archived, maintained at [adefossez/demucs](https://github.com/adefossez/demucs) |
 | **SCNet** (`scnet`, `scnet-large`; starrytong) | MIT | MIT: "I confirm that the released SCNet and SCNet-large pretrained weights are distributed under the MIT License, consistent with the source code. You are welcome to redistribute the original checkpoints and format-converted versions, including ONNX exports, as part of your MIT-licensed tool, with appropriate attribution." (the author in [starrytong/SCNet#35](https://github.com/starrytong/SCNet/issues/35), 2026) | trained on MUSDB18-HQ; hosted with its configs by [ZFTurbo/Music-Source-Separation-Training](https://github.com/ZFTurbo/Music-Source-Separation-Training) (MIT), whose own MUSDB18-HQ checkpoints (SCNet XL, BS-RoFormer) carry its author's MIT statement only for some files ([#254](https://github.com/ZFTurbo/Music-Source-Separation-Training/issues/254)) |
-| **MRX** (MERL; `mrx`) | MIT | MIT: the repository's [`.reuse/dep5`](https://github.com/merlresearch/cocktail-fork-separation/blob/main/.reuse/dep5) names the four checkpoints, "Copyright: 2023 Mitsubishi Electric Research Laboratories (MERL) / License: MIT" | trained on Divide and Remaster v2, whose music and effects come from FMA and FSD50K clips each under its own licence, some non-commercial (the DnR v3 paper's account) |
+| **Mel-Band RoFormer** (Kimberley Jensen's vocals model; `mel-roformer`) | the architecture: Mel-Band RoFormer (ByteDance) in Phil Wang's BS-RoFormer code (MIT), in ZFTurbo's Music-Source-Separation-Training (MIT) | MIT: the [model card](https://huggingface.co/KimberleyJSN/melbandroformer) states `license: mit` and nothing more | what it trained on is not stated (the card holds its licence only) |
+| **MRX** (MERL; `mrx`) | MIT | MIT: the repository's [`.reuse/dep5`](https://github.com/merlresearch/cocktail-fork-separation/blob/main/.reuse/dep5) names the four checkpoints, "Copyright: 2023 Mitsubishi Electric Research Laboratories (MERL) / License: MIT" | trained on Divide and Remaster v2 ([Zenodo](https://zenodo.org/records/6949108): CC BY 4.0), whose music and effects come from FMA and FSD50K clips each under its own licence, some non-commercial (the DnR v3 paper's account) |
 | **TIGER** (Tsinghua; `tiger`) | MIT (repository LICENSE; its README badge says Apache 2.0) | Apache 2.0: the [model card](https://huggingface.co/JusperLee/TIGER-DnR) states `license: apache-2.0` | trained on Divide and Remaster v1 (652 test mixtures in its paper), sourced as v2 is |
 | **anvuew's de-reverb** (`dereverb-room`) | the architecture: BS-RoFormer (Phil Wang's [BS-RoFormer](https://github.com/lucidrains/BS-RoFormer), MIT, in ZFTurbo's Music-Source-Separation-Training) | **GPL-3.0** ([model card](https://huggingface.co/anvuew/dereverb_room)): the converted copy is hosted under the same licence, fetched at run time, never bundled | trained on convolutional reverbs from pyroomacoustics, the dry voices not named |
 | **Bandit v2** (DnR v3) | Apache 2.0 | **CC BY-SA 4.0** ([Zenodo](https://zenodo.org/records/12701995)): a converted copy is an adaptation under the same terms | not shipped; BandIt v1's DnR checkpoints are CC BY-NC 4.0 ([Zenodo](https://zenodo.org/records/10160698)) |
 | **Spleeter** (Deezer) | MIT | **undocumented** | the README licenses only "the code of Spleeter"; the pretrained weights' license is an open, unresolved question ([deezer/spleeter#898](https://github.com/deezer/spleeter/issues/898)) — do not assume MIT |
 
-Audit any weight source yourself before shipping it — this table reflects what each project states as of this writing, not a guarantee. `scripts/export-openunmix.py` defaults to `umxhq` (not `umxl`) for exactly this reason. MUSDB18, which every model here trained on, is licensed for educational use; whether that reaches the weights no project has settled (Défossez in [demucs#384](https://github.com/facebookresearch/demucs/issues/384): "a grey area").
+Audit any weight source yourself before shipping it — this table reflects what each project states as of this writing, not a guarantee. `scripts/export-openunmix.py` defaults to `umxhq` (not `umxl`) for exactly this reason. MUSDB18, which Open-Unmix, Demucs and SCNet here trained on, is licensed for educational use; whether that reaches the weights no project has settled (Défossez in [demucs#384](https://github.com/facebookresearch/demucs/issues/384): "a grey area").
 
 ## Reference
 

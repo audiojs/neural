@@ -63,8 +63,8 @@ export function load(model?: 'rnnoise' | 'deepfilternet3', opts?: LoadOptions): 
 /** The bundled RNNoise weights (3,544,320 bytes), e.g. for the worklet's processorOptions.weights. */
 export function weights(): Promise<Uint8Array>
 
-/** RNNoise frame by frame, as rnnoise_process_frame: 480 samples at 48 kHz and int16 scale in and out; returns the frame's voice probability. Output lags input by 960 samples. */
-export function rnnoise(weights: Uint8Array | ArrayBuffer | object): { process(input: Float32Array, output: Float32Array): number, latency: number }
+/** RNNoise frame by frame, as rnnoise_process_frame: 480 samples at 48 kHz and int16 scale in and out; returns the frame's voice probability. Output lags input by 960 samples. `run` is `process` with no number returned, the probability left in `voice[0]`: real-time loops call it, since a float a call returns is a new object where V8 does not inline the call. */
+export function rnnoise(weights: Uint8Array | ArrayBuffer | object): { process(input: Float32Array, output: Float32Array): number, run(input: Float32Array, output: Float32Array): void, voice: Float32Array, latency: number }
 
 /** RNNoise frame length: 480 samples, 10 ms at 48 kHz. */
 export const FRAME: 480

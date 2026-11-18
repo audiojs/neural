@@ -2,7 +2,7 @@
 
 > One inference adapter: load an ONNX model, run it in Node or the browser, worklet-ready.
 
-Every neural atom needs the same three things — load bytes, run tensors through a model, free the session — on top of two different runtimes (`onnxruntime-node` on the server, `onnxruntime-web` in the browser/worker/worklet). This package is that one adapter: `asr`, `align`, `separate`, `diarize`, `tts`, `denoise` and anything else in the lane build on it instead of each wiring ONNX Runtime themselves.
+Every neural atom needs the same three things — load bytes, run tensors through a model, free the session — on top of two different runtimes (`onnxruntime-node` on the server, `onnxruntime-web` in the browser/worker/worklet). This package is that one adapter: `separate`, `denoise`, `tag`, `transcribe`, `timbre`, `vocode` and anything else in the lane build on it instead of each wiring ONNX Runtime themselves (`asr`, `align`, `diarize` and `tts` run through `@huggingface/transformers` instead).
 
 ```
 npm install @audio/neural-runtime

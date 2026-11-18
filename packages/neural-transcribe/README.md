@@ -94,7 +94,7 @@ In headless Chromium on the same machine, once onnxruntime-web is loaded, the 60
 
 ## License
 
-Apache-2.0. `transcribe.js` translates Basic Pitch's Apache-2.0 Python (Copyright 2022 Spotify AB); its header lists the changes and [NOTICE](./NOTICE) carries the attribution. The model is Apache-2.0 too and is downloaded, not bundled.
+Apache-2.0. `transcribe.js` translates Basic Pitch's Apache-2.0 Python (Copyright 2022 Spotify AB); its header lists the changes and [NOTICE](./NOTICE) carries the attribution. The model is Apache-2.0 too, as part of that repository (no separate terms for it), and is downloaded, not bundled. It was trained on GuitarSet, MAESTRO, Slakh, iKala and MedleyDB (the [paper](https://arxiv.org/abs/2203.09893)'s Table 1): GuitarSet and Slakh are CC BY 4.0 (Zenodo), MAESTRO CC BY-NC-SA 4.0 (Magenta's page); MedleyDB's audio is access-restricted on Zenodo, and iKala's terms were not found.
 
 ## Reference
 

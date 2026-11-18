@@ -2,7 +2,7 @@
 // model's scores (tensorflow/models at export.py's COMMIT, yamnet.h5) and the log-mel of some of its patches as
 // features.py makes them (scripts/export.py --reference). The model's tests read yamnet.fp16.onnx from the neural cache
 // (export.py writes it there) or from the hosting directory prepared for its upload, else the hosted copy once REVISION
-// is set; without any they are skipped.
+// is set (skipped offline); without any they are skipped.
 import test, { ok, is, throws, rejects } from 'tst'
 import { existsSync, readFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { createHash } from 'node:crypto'
@@ -22,6 +22,9 @@ const W = FP16 ? { weights: FP16 } : REVISION ? {} : null
 const model = W ? test : test.skip
 if (!W) console.log(`  no yamnet.fp16.onnx in ${CACHE}/yamnet or ${CACHE}/hosting/yamnet, and REVISION unset: the model's tests are skipped (scripts/export.py writes it)`)
 const RUN = { timeout: 300_000 }
+// without a local copy the model's tests read the hosted file: skipped offline
+let online
+const offline = async () => !(online ??= await fetch('https://huggingface.co/', { method: 'HEAD', signal: AbortSignal.timeout(8000) }).then(r => r.ok, () => false)) && (console.log('  offline: skipped'), true)
 const maxDiff = (rows, want) => rows.reduce((m, r, i) => r.reduce((m, v, k) => Math.max(m, Math.abs(v - want[i * CLASSES.length + k])), m), 0)
 
 test('inputs: the waveforms the fixtures were made from', () => {
@@ -55,6 +58,7 @@ test('features: upstream\'s log-mel patches, patch for patch', () => {
 })
 
 model('scores: these features through the float16 model, against the Keras model on the same waveform', RUN, async () => {
+	if (!FP16 && await offline()) return
 	// the float16 weights' rounding: 3.6e-3 at most over the 49 patches (scripts/export.py --verify), the float32 export's 1.6e-6
 	let fp32 = existsSync(FP32)
 	for (let [key, r] of Object.entries(REF.inputs)) {
@@ -71,6 +75,7 @@ model('scores: these features through the float16 model, against the Keras model
 })
 
 model('tag: lena is speech; 44.1 kHz in, resampled as the fixture was', RUN, async () => {
+	if (!FP16 && await offline()) return
 	let t = await tag(lena44(), LENA_RATE, W)
 	is(t.length, 5, 'top 5 by default')
 	is(t[0].name, 'Speech')
@@ -84,6 +89,7 @@ model('tag: lena is speech; 44.1 kHz in, resampled as the fixture was', RUN, asy
 })
 
 model('tag: 48 kHz agrees with 16 kHz, 44.1 kHz too', RUN, async () => {
+	if (!FP16 && await offline()) return
 	// lena at 48 kHz (resampled from its 44.1) against lena at 16 kHz: 1.4e-3 at most measured, the top 5 the same.
 	// A synthetic tone moves more: the empty bands between its harmonics sit at the log's floor, where the resampler's
 	// in-band ripple (83 dB SNR) shows; its patches up to 2.5e-2, its mean scores 2.6e-3
@@ -99,6 +105,7 @@ model('tag: 48 kHz agrees with 16 kHz, 44.1 kHz too', RUN, async () => {
 })
 
 model('tag: channels are mixed to their mean; shorter than a patch, silence and nothing as upstream', RUN, async () => {
+	if (!FP16 && await offline()) return
 	let x = X.pluck, y = sweep(16000), mean = x.map((v, i) => (v + y[i]) / 2)
 	is(await tag([x, y], 16000, W), await tag(mean, 16000, W), 'two channels: their mean, as inference.py')
 	is(await tag([x, x], 16000, W), await tag(x, 16000, W), 'two equal channels: the one')
@@ -115,6 +122,7 @@ model('tag: channels are mixed to their mean; shorter than a patch, silence and 
 })
 
 model('tag: top, and the hop between patches', RUN, async () => {
+	if (!FP16 && await offline()) return
 	is(await tag(X.noise, 16000, { ...W, top: 0 }), [])
 	let all = await tag(X.noise, 16000, { ...W, top: Infinity })
 	is(all.length, 521, 'Infinity: all 521')
@@ -151,8 +159,6 @@ test('model: the file tested is the one SHA256 names', () => {
 })
 
 // The hosted file (Hugging Face, the revision pinned). Network: skipped offline or until REVISION is set
-let online
-const offline = async () => !(online ??= await fetch('https://huggingface.co/', { method: 'HEAD', signal: AbortSignal.timeout(8000) }).then(r => r.ok, () => false)) && (console.log('  offline: skipped'), true)
 test('tag: the hosted file is pinned to its revision and SHA-256', async () => {
 	if (!REVISION) return console.log('  REVISION unset (not uploaded yet): skipped')
 	if (await offline()) return

@@ -1,0 +1,39 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # and 24: Float16Array is a global from Node 24 on, and neural-timbre's test checks its own float16 reading against it
+        # from 20: sharp, which the transformers.js packages load as they are imported, asks Node 20.9
+        node-version: [20, 22, 24]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # A test that needs model weights skips without them (none are cached here), and one that needs the network skips
+      # when huggingface.co does not answer: the hosts the models come from are closed to the tests, so nothing downloads
+      - name: Close the model hosts
+        run: echo '0.0.0.0 huggingface.co raw.githubusercontent.com' | sudo tee -a /etc/hosts
+
+      - name: Run tests
+        run: npm test

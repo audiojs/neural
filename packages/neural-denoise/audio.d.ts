@@ -21,8 +21,8 @@ export interface RnnoiseOptions {
 export declare const rnnoise: {
   (ctx: Ctx): Process
   channels: "any"
-  latency: (ctx: { sampleRate: number, params: Live }) => number
-  tail: 0
+  latency: (at: { sampleRate: number, params: Live, buffers: {} }) => number
+  tail: (at: { sampleRate: number, params: Live, buffers: {} }) => number
   params: {
     /** 0..100 dB (default 16) */
     "limit": { type: "number", default: 16 }

@@ -27,10 +27,17 @@ const local = LOCAL ? test : test.skip
 const CACHE = path.join(process.env.AUDIO_NEURAL_CACHE || path.join(os.homedir(), '.cache', 'audiojs', 'neural'), 'timbre')
 const DATA = process.env.TIMBRE_DATA || path.join(os.homedir(), '.cache', 'audiojs', 'data', 'dx7')
 
+// IEEE 754-2008 binary16, little-endian: a sign bit, 5 exponent bits biased by 15, 10 fraction bits; exponent 0 is
+// subnormal, 31 infinity or NaN. Read by hand: Float16Array is a global from Node 24 on
+const f16 = b => Float32Array.from({ length: b.length >> 1 }, (_, i) => {
+	let h = b[2 * i] | b[2 * i + 1] << 8, e = h >> 10 & 31, m = h & 1023
+	return (h >> 15 ? -1 : 1) * (e === 31 ? (m ? NaN : Infinity) : (e ? 1024 + m : m) * 2 ** ((e || 1) - 25))
+})
+
 // fixtures/rom1a: { voices: [{ index, name, id }], note, featuresSha256 } and one float16 feature patch per voice
 const ROM = JSON.parse(readFileSync(new URL('rom1a.json', FIX), 'utf8'))
 {
-	let half = new Float16Array(new Uint8Array(readFileSync(new URL('rom1a.f16', FIX))).buffer), size = FEATURES.bands * FEATURES.frames
+	let half = f16(readFileSync(new URL('rom1a.f16', FIX))), size = FEATURES.bands * FEATURES.frames
 	ROM.patches = ROM.voices.map((_, i) => Float32Array.from(half.subarray(i * size, (i + 1) * size)))
 }
 
@@ -149,6 +156,12 @@ test('matcher: encoder-shaped ONNX end to end through @audio/neural-runtime', as
 	await rejects(() => createMatcher('dx7-heldout', { model }), /no catalog 'dx7-heldout' is hosted \(dx7-factory, dx7-all\)/)
 }, { timeout: 60000 })
 
+// f16 against the engine's own binary16 where it has one (Node 24 on): every one of the 65536 patterns
+;(typeof Float16Array === 'function' ? test : test.skip)('f16: each binary16 pattern reads as Float16Array reads it', () => {
+	let b = new Uint8Array(Uint16Array.from({ length: 65536 }, (_, i) => i).buffer), a = f16(b), want = new Float16Array(b.buffer)
+	is(a.findIndex((v, i) => !Object.is(v, want[i])), -1, 'none differ, NaN and -0 included')
+})
+
 // ------------------------------------------------ the hosted encoder and catalogs, from local copies
 
 local('hosted: encoder.int8.onnx and catalogs/ are bound to each other and to features.js', async () => {
@@ -165,9 +178,14 @@ local('hosted: encoder.int8.onnx and catalogs/ are bound to each other and to fe
 	is(ROM.featuresSha256, binding.featuresSha256, 'fixtures/rom1a: prepared by these features')
 })
 
+// without the copies here the hosted files are fetched (Hugging Face, the revision pinned): skipped offline
+let online
+const offline = async () => !(online ??= await fetch('https://huggingface.co/', { method: 'HEAD', signal: AbortSignal.timeout(8000) }).then(r => r.ok, () => false)) && (console.log('  offline: skipped'), true)
+
 // F4 at velocity 90: a note and velocity no catalog reference uses (C2-C6 at 64 and 112)
 // dx7-all holds near copies of Yamaha's voices from other cartridges, which may rank first
 for (let [name, bar] of [['dx7-factory', 31], ['dx7-all', 24]]) test(`hosted ${name}: ROM1A voices at an unseen note find themselves (fixtures/rom1a)`, async () => {
+	if (!LOCAL && await offline()) return
 	let m = await createMatcher(name, { weights: WEIGHTS }) // the hosted encoder and catalog by name, from the copies here
 	let e = await m.encoder.project(ROM.patches)
 	let at = e.map((v, i) => rank(v, m.catalog, 5).findIndex(r => m.catalog.entries[r.index].id === ROM.voices[i].id))
@@ -178,6 +196,7 @@ for (let [name, bar] of [['dx7-factory', 31], ['dx7-all', 24]]) test(`hosted ${n
 }, { timeout: 60000 })
 
 test('hosted: identify(note) with no catalog ranks dx7-factory, best first', async () => {
+	if (!LOCAL && await offline()) return
 	let found = await identify(tone(220, 70000, 44100, 8), { weights: WEIGHTS })
 	is(found.length, 5)
 	ok(found.every(f => typeof f.name === 'string' && f.cartridge && f.score <= 1 && f.score >= -1), 'dx7-factory entries with scores')
@@ -282,7 +301,7 @@ for (let [name, file] of [['encoder.onnx', path.join(CACHE, 'encoder.onnx')], ['
 	;(have ? test : test.skip)(`parity: ${name} in @audio/neural-runtime matches PyTorch: embeddings within 1e-4, same top-5`, async () => {
 		let fx = JSON.parse(readFileSync(parity, 'utf8'))
 		let { bands, frames } = fx.features, size = bands * frames
-		let raw = Buffer.from(fx.patches, 'base64'), half = new Float16Array(raw.buffer, raw.byteOffset, raw.length / 2)
+		let half = f16(Buffer.from(fx.patches, 'base64'))
 		let patches = Array.from({ length: fx.rows.length }, (_, i) => Float32Array.from(half.subarray(i * size, (i + 1) * size)))
 		let enc = await createEncoder({ model: file })
 		let e = await enc.project(patches)

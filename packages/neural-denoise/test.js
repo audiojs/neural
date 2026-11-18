@@ -11,6 +11,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import denoise, { load, weights, rnnoise, mixback, guard, segments, KINDS, FRAME, MODEL } from './denoise.js'
 import { model } from './rnnoise.js'
 import { loadDeepFilter, enhance, erbWidths, voicing, bandEdge, LEVEL, FILL, FLOOR } from './deepfilter.js'
@@ -89,6 +90,33 @@ test('rnnoise: the little model, bit-exact too (skipped without the blob scripts
 		is(sha(out), FIX.cases[name].little.out, `${name}: output`)
 		is(sha(vad), FIX.cases[name].little.vad, `${name}: VAD`)
 	}
+})
+
+test('rnnoise: run(), the frame with no number returned (real-time loops), bit-exact to upstream C too, its voice probability in voice[0]', async () => {
+	let net = model(await weights())
+	for (let [name, x] of Object.entries(IN)) {
+		let st = rnnoise(net), out = new Float32Array(x.length), vad = new Float32Array(x.length / FRAME)
+		for (let i = 0, k = 0; i < x.length; i += FRAME, k++) { st.run(x.subarray(i, i + FRAME), out.subarray(i, i + FRAME)); vad[k] = st.voice[0] }
+		is(sha(out), FIX.cases[name].regular.out, `${name}: output`)
+		is(sha(vad), FIX.cases[name].regular.vad, `${name}: VAD`)
+	}
+})
+
+// Upstream's rnnoise_process_frame starts each frame at vad_prob = 0, and only compute_rnn, which a silent frame (E <
+// 0.04) skips, sets it (xiph/rnnoise 70f1d25, src/denoise.c:467, :474-476, :503). The fixtures' digital silence comes
+// before any voice, where a probability left over from the frame before is 0 too; here it follows two seconds of lena.
+// From 0.3 s into it the biquad's ring and the window are long gone and every frame is silent.
+test('rnnoise: digital silence after speech: from 0.3 s into it each frame\'s voice probability is 0, from process() and in voice[0]', async () => {
+	let net = model(await weights()), x = new Float32Array(3 * 48000), a = rnnoise(net), b = rnnoise(net), y = new Float32Array(FRAME), most = 0, left = []
+	x.set(IN.lena.subarray(0, 2 * 48000))
+	for (let i = 0; i < x.length; i += FRAME) {
+		let f = x.subarray(i, i + FRAME), p = a.process(f, y)
+		b.run(f, y)
+		if (i < 2 * 48000) most = Math.max(most, p)
+		else if (i >= 2.3 * 48000 && (p !== 0 || b.voice[0] !== 0)) left.push(i / FRAME)
+	}
+	ok(most > .5, `the speech before it: a voice probability up to ${most.toFixed(2)}`)
+	is(left.length, 0, `silent frames with a probability left over: ${left.slice(0, 5).join(', ') || 'none'}`)
 })
 
 test('rnnoise: malformed weights throw', async () => {
@@ -190,6 +218,344 @@ test('manifest: other rates resample in and out; the output follows denoise() be
 	let { out: [alone] } = await hosted(44100, [b], 20, () => 1000)
 	is(maxDiff(z, alone), 0, 'each channel on its own')
 	is((await import('./audio.js')).rnnoise.latency({ sampleRate: 8000 }), 271, '8 kHz: 33.9 ms')
+})
+
+// What process allocates, counted as @audio/compile's validator counts it (tools/verify.js taken(), its child's
+// flags), in a child Node: what V8's young generation and the stores of typed arrays take in between two forced minor
+// collections, and what goes straight into the old generation. One instance warms the code; a second is made, as a host
+// holding two builds it, its first block counted (made there, two channels' state took 1.05 MB, their arrays' stores),
+// then, once V8 has optimized what the new stream is first to reach, its blocks: 2^15 of 8 frames, the less of two runs.
+// Each held to the validator's line, 6144 bytes a run (3/64 of a byte a block over its 2^17, kept by its readings of
+// 2^15), the old generation to 64 KB.
+test('manifest: process allocates nothing, from a second instance\'s first block on (V8\'s heap and the typed arrays\' stores, as @audio/compile\'s validator counts them)', async () => {
+	let B = 1 << 15, LINE = 6144, OLD = 1 << 16, child = `
+		import v8 from 'node:v8'
+		if (!v8.GCProfiler) { console.log(JSON.stringify({ na: 'no v8.GCProfiler before Node 18.15' })); process.exit() }
+		let { rnnoise } = await import(${JSON.stringify(new URL('./audio.js', import.meta.url).href)})
+		let F = 8, B = ${B}, params = { limit: Float32Array.of(16), music: 'pass' }
+		let make = () => rnnoise({ sampleRate: 48000, maxBlockSize: 128, maxChannels: 2, params })
+		let s = 7, noise = () => Float32Array.from({ length: 64 * F }, () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0, .3 * (s / 2 ** 32 - .5)))
+		let src = [noise(), noise()], ins = Array.from({ length: 64 }, (_, k) => [src.map(c => c.subarray(k * F, k * F + F))])
+		let out = [[new Float32Array(F), new Float32Array(F)]], run = (p, n) => { for (let i = 0; i < n; i++) p(ins[i & 63], out, params) }
+		let used = (g, sp) => g.heapSpaceStatistics.reduce((a, q) => sp.includes(q.spaceName) ? a + q.spaceUsedSize : a, 0)
+		let taken = f => {
+			let prof = new v8.GCProfiler(), r = { young: 0, old: 0, stores: 0 }
+			prof.start(); gc({ type: 'minor' }); f(); gc({ type: 'minor' })
+			let g = prof.stop().statistics
+			for (let i = 1; i < g.length; i++) {
+				let a = g[i - 1].afterGC, b = g[i].beforeGC
+				r.young += used(b, ['new_space', 'new_large_object_space']) - used(a, ['new_space', 'new_large_object_space'])
+				r.old += Math.max(0, used(b, ['old_space', 'large_object_space']) - used(a, ['old_space', 'large_object_space']))
+				r.stores += b.heapStatistics.externalMemory - a.heapStatistics.externalMemory
+			}
+			return r
+		}
+		run(make(), B)
+		let b = make(), first = taken(() => run(b, 1))
+		run(b, B)
+		console.log(JSON.stringify({ first, runs: [taken(() => run(b, B)), taken(() => run(b, B))] }))`
+	let flags = ['--expose-gc', '--no-concurrent-recompilation', '--no-allocation-site-pretenuring', '--no-concurrent-array-buffer-sweeping']
+	let r = JSON.parse(execFileSync(process.execPath, [...flags, '--input-type=module', '-e', child], { encoding: 'utf8' }))
+	if (r.na) return console.log(`  (${r.na}: skipped)`)
+	let heap = x => x.young + x.stores, run = r.runs.reduce((a, x) => heap(x) < heap(a) ? x : a)
+	ok(heap(r.first) <= LINE && r.first.old <= OLD, `the first block of a second instance: ${heap(r.first)} bytes, ${r.first.old} old`)
+	ok(heap(run) <= LINE && run.old <= OLD, `${heap(run)} bytes in ${B} blocks of 8 frames (${(heap(run) / B).toFixed(4)} a block), ${run.old} old`)
+})
+
+// The guard's frame counter first wraps at frame 408, 4.08 s into a stream. While the wrap was a branch, its first
+// taking had no type feedback and deoptimized the function there: 1.2 to 2.4 MB at 4.0 to 4.5 s of every process's
+// first stream, on Node 22 and 25, at 8 to 96 kHz. Counted as the test above counts, in a child Node: one instance's
+// first stream at 48 kHz in blocks of 8 frames, six windows of half a second from 3 s on, each within the validator's
+// line, 6144 bytes a run, the old generation within 64 KB.
+test('manifest: no burst of allocation 3 to 6 s into the first stream, where the guard\'s frame counter first wraps (4.08 s)', { timeout: 120000 }, async () => {
+	let LINE = 6144, OLD = 1 << 16, child = `
+		import v8 from 'node:v8'
+		if (!v8.GCProfiler) { console.log(JSON.stringify({ na: 'no v8.GCProfiler before Node 18.15' })); process.exit() }
+		let { rnnoise } = await import(${JSON.stringify(new URL('./audio.js', import.meta.url).href)})
+		let F = 8, params = { limit: Float32Array.of(16), music: 'pass' }, p = rnnoise({ sampleRate: 48000, maxBlockSize: 128, maxChannels: 2, params })
+		let s = 7, noise = () => Float32Array.from({ length: 64 * F }, () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0, .3 * (s / 2 ** 32 - .5)))
+		let src = [noise(), noise()], ins = Array.from({ length: 64 }, (_, k) => [src.map(c => c.subarray(k * F, k * F + F))])
+		let out = [[new Float32Array(F), new Float32Array(F)]], k = 0, run = n => { for (let e = k + n; k < e; k++) p(ins[k & 63], out, params) }
+		let used = (g, sp) => g.heapSpaceStatistics.reduce((a, q) => sp.includes(q.spaceName) ? a + q.spaceUsedSize : a, 0)
+		let taken = f => {
+			let prof = new v8.GCProfiler(), r = { young: 0, old: 0, stores: 0 }
+			prof.start(); gc({ type: 'minor' }); f(); gc({ type: 'minor' })
+			let g = prof.stop().statistics
+			for (let i = 1; i < g.length; i++) {
+				let a = g[i - 1].afterGC, b = g[i].beforeGC
+				r.young += used(b, ['new_space', 'new_large_object_space']) - used(a, ['new_space', 'new_large_object_space'])
+				r.old += Math.max(0, used(b, ['old_space', 'large_object_space']) - used(a, ['old_space', 'large_object_space']))
+				r.stores += b.heapStatistics.externalMemory - a.heapStatistics.externalMemory
+			}
+			return r
+		}
+		run(3 * 6000)
+		let windows = []
+		for (let w = 0; w < 6; w++) windows.push(taken(() => run(3000)))
+		console.log(JSON.stringify({ windows }))`
+	let flags = ['--expose-gc', '--no-concurrent-recompilation', '--no-allocation-site-pretenuring', '--no-concurrent-array-buffer-sweeping']
+	let r = JSON.parse(execFileSync(process.execPath, [...flags, '--input-type=module', '-e', child], { encoding: 'utf8', timeout: 120000 }))
+	if (r.na) return console.log(`  (${r.na}: skipped)`)
+	let heap = x => x.young + x.stores
+	ok(r.windows.every(x => heap(x) <= LINE && x.old <= OLD), `bytes in each half second from 3 s: ${r.windows.map(heap).join(', ')} (old ${r.windows.map(x => x.old).join(', ')})`)
+})
+
+test('manifest: a call longer than ctx.maxBlockSize or wider than ctx.maxChannels throws a RangeError naming what it carried and the bound; a ctx without either, a TypeError naming it', async () => {
+	let { rnnoise: atom } = await import('./audio.js'), params = { limit: Float32Array.of(16), music: 'pass' }
+	let p = atom({ sampleRate: 48000, maxBlockSize: 128, maxChannels: 2, params }), chans = (c, n) => [Array.from({ length: c }, () => new Float32Array(n))]
+	p(chans(2, 128), chans(2, 128), params)
+	throws(() => p(chans(1, 129), chans(1, 129), params), /^RangeError: .*129 frames.*maxBlockSize is 128/, 'a call of 129 frames, 128 the most')
+	throws(() => p(chans(3, 64), chans(3, 64), params), /^RangeError: .*3 channels.*maxChannels is 2/, 'a call of 3 channels, 2 the most')
+	throws(() => atom({ sampleRate: 48000, maxChannels: 2, params }), /^TypeError: .*maxBlockSize/, 'no maxBlockSize')
+	throws(() => atom({ sampleRate: 48000, maxBlockSize: 128, params }), /^TypeError: .*maxChannels/, 'no maxChannels')
+})
+
+// A host here, so that the tests below run wherever this file does. Of the duties contract 1.0 lists under What a host
+// owes it keeps: (1) the instance built before its calls, with `params` (the values at frame 0, Context); (3) values
+// changed only between calls: the call split at each of `moves` (a list of [frame, values], in order), each call handed
+// the values at its first frame, a number as a Float32Array of one it keeps and writes in place (Parameters, Values),
+// and a number that declares `smoothing` ramped from the value in force over that many seconds in calls of 32 frames at
+// most, as toStream ramps it (limit and music declare none, so they jump); (5) calls of `block` frames, its
+// maxBlockSize, or of cut(i) at frame i held to it, bus 0 carrying the input's channels (the inputs here are finite,
+// so it makes no NaN 0); (8) the latency taken at construction and, with `tail`, the tail declared at the values in
+// force at the end rendered, as toStream's end() renders it. It leaves out (2), clamping and the check of an enum's
+// values: the tests give values in range; (7), ctx.transport, which rnnoise does not read; and those with nothing to
+// act on here: (4) restart, (6) notes, (9) state, (10) a real-time host's, (11) a plugin's. It renders the input, the
+// latency's frames of silence, the tail's, then `more` frames of silence. hosting() makes one call a step, its first
+// step building the instance, so that a test can call two instances in turn; host() takes every step.
+// → { y: each channel aligned by the latency, L: the latency, T: the tail's frames }
+function* hosting(m, x, { params = {}, moves = [], block = 128, cut, tail = false, more = 0, sampleRate: sr = 48000 } = {}) {
+	let spec = m.params, set = {}, ramp = {}
+	for (let k in spec) set[k] = params[k] ?? spec[k].default
+	// each value in force, the last one handed, a number as it was before its Float32Array rounded it
+	let cur = { ...set }, live = valuesOf(spec, set), setting = v => ({ sampleRate: sr, params: valuesOf(spec, v), buffers: {} })
+	let L = typeof m.latency === 'function' ? m.latency(setting(set)) : m.latency ?? 0
+	let T = tail ? Math.round(tailOf(m, setting(Object.assign({ ...set }, ...moves.map(([, v]) => v)))) * sr) : 0
+	let n = x[0].length, N = n + L + T + more, inp = x.map(c => { let v = new Float32Array(N); v.set(c); return v }), out = x.map(() => new Float32Array(N))
+	let proc = m({ sampleRate: sr, maxBlockSize: block, maxChannels: x.length, params: setting(set).params, buffers: {} })
+	// a ramp [from, to, its first frame, its frames]: its value at frame i
+	let along = ([a, b, at, len], i) => i - at < len ? b + (a - b) * (1 - (i - at) / len) : b
+	yield
+	for (let i = 0, j = 0, k; i < N; i += k) {
+		for (; j < moves.length && moves[j][0] <= i; j++) for (let [p, v] of Object.entries(moves[j][1])) {
+			let len = spec[p].smoothing > 0 ? Math.max(1, Math.round(spec[p].smoothing * sr)) : 0
+			if (len) ramp[p] = [cur[p], v, i, len]
+			else if (spec[p].type === 'number') live[p][0] = cur[p] = v
+			else live[p] = cur[p] = v
+		}
+		k = Math.min(N - i, block, cut ? cut(i) : block)
+		if (j < moves.length) k = Math.min(k, moves[j][0] - i)
+		for (let p in ramp) {
+			let [, , at, len] = ramp[p]
+			live[p][0] = cur[p] = along(ramp[p], i)
+			if (i - at < len) k = Math.min(k, 32, at + len - i)
+		}
+		proc([inp.map(c => c.subarray(i, i + k))], [out.map(c => c.subarray(i, i + k))], live)
+		yield
+	}
+	return { y: out.map(c => c.subarray(L)), L, T }
+}
+const host = (m, x, opts) => { let h = hosting(m, x, opts), r; while (!(r = h.next()).done); return r.value }
+// a setting's values as a host hands them: a number as a Float32Array of one
+const valuesOf = (spec, v) => Object.fromEntries(Object.keys(spec).map(k => [k, spec[k].type === 'number' ? Float32Array.of(v[k]) : v[k]]))
+// audio's batch.js, the host `audio` renders with: the audio package, else the audio checkout beside @audio, as
+// @audio/compile's validator finds its host. Where neither is, the tests below run on host() alone
+const HOST = await import('audio/batch').catch(() => import(new URL('../../../../audio/batch.js', import.meta.url).href)).catch(() => null)
+// host()'s render through toStream: calls of `block` frames, the input written in parts that start at each of `moves`,
+// each part with its values, the latency's frames of nothing, end() with `tail`, then `more` frames of nothing
+function streamed(m, x, { params = {}, moves = [], block = 128, tail = false, more = 0, sampleRate: sr = 48000 } = {}) {
+	let s = HOST.toStream(m, { sampleRate: sr, maxBlockSize: block, params }), n = x[0].length, parts = [], T = 0
+	let add = r => { if (r) parts.push(r instanceof Float32Array ? [r] : r) }
+	for (let j = 0, a = 0; j <= moves.length; j++) {
+		let b = j < moves.length ? Math.min(moves[j][0], n) : n
+		if (b > a) add(s.write(x.map(c => c.subarray(a, b)), moves[j - 1]?.[1]))
+		a = b
+	}
+	add(s.write(s.latency))
+	if (tail) { let t = s.end(); add(t); T = t ? (t instanceof Float32Array ? t : t[0]).length : 0 }
+	if (more) add(s.write(more))
+	let y = x.map((_, c) => { let v = new Float32Array(parts.reduce((k, p) => k + p[c].length, 0)), o = 0; for (let p of parts) { v.set(p[c], o); o += p[c].length } return v.subarray(s.latency) })
+	return { y, L: s.latency, T }
+}
+// a setting rendered by host(), and by audio's toStream where it is found: the same samples, the same tail
+function played(m, x, opts, label) {
+	let a = host(m, x, opts)
+	if (HOST) {
+		let b = streamed(m, x, opts), same = a.T === b.T && a.y.every((c, k) => c.length === b.y[k].length && c.every((v, i) => Object.is(v, b.y[k][i])))
+		ok(same, `${label}: audio's toStream renders the same samples${a.T === b.T ? '' : `, its tail ${b.T} frames, here ${a.T}`}`)
+	}
+	return a
+}
+const rmsOf = (a, from, to) => { let s = 0; for (let i = from; i < to; i++) s += a[i] * a[i]; return Math.sqrt(s / (to - from)) }
+// a manifest's tail as a host reads it: seconds, or a function of the setting
+const tailOf = (m, setting) => typeof m.tail === 'function' ? m.tail(setting) : m.tail ?? 0
+
+// The contract's tail (contract 1.0, Latency, tail): the seconds after the input stops until the output stays 60 dB
+// under the input's RMS level, which a host goes on rendering. What rings is RNNoise's DC-blocking biquad (upstream's
+// rnn_biquad, a = [−1.99599, 0.996]: xiph/rnnoise 70f1d25, src/denoise.c:469, :409-419), computed here alone: after a
+// DC step it stays over 60 dB down for `dc` samples; after a tone of 16.3 Hz, the one the declared tail rests on
+// (audio.js: 1.4183 of its peak), stopping at the phase of the 16 tried after which it rings longest, for `rings[q]`
+// against the tone's RMS, what the tail at limit 0 covers, within 2 ms. Through the processor at the default limit and
+// at 0, at 48 and 44.1 kHz: that tone at that phase, quiet enough to pass ungated, a DC step at −46 dBFS and the
+// validator's 312 Hz tone of 0.5. The host renders the declared tail; past it every window of 64 frames is 60 dB under
+// the input's RMS (the validator's reading); the tone is over it in the 2 ms before the tail, so a tail 2 ms shorter
+// fails; the step rings past half of the tail
+test('manifest: its tail covers the ring of RNNoise\'s DC-blocking biquad after the input stops, the longest to within 2 ms, and a host renders it', async () => {
+	let { rnnoise: atom } = await import('./audio.js'), a0 = Math.fround(-1.99599), a1 = Math.fround(.996)
+	// the biquad alone on x: the samples after x's first n until |y| stays at or under `floor`
+	let biquad = (x, n, floor) => {
+		let m0 = 0, m1 = 0, ring = 0
+		for (let i = 0; i < x.length; i++) { let y = x[i] + m0; m0 = m1 + (-2 * x[i] - a0 * y); m1 = x[i] - a1 * y; if (i >= n && Math.abs(y) > floor) ring = i - n + 1 }
+		return ring
+	}
+	// n samples at rate sr of a 16.3 Hz tone of amplitude A ending at phase qπ/8, then 0.1 s of nothing
+	let tone = (sr, n, A, q) => Float32Array.from({ length: n + sr / 10 }, (_, i) => i < n ? A * Math.sin(2 * Math.PI * 16.3 * (i - n) / sr + Math.PI * q / 8) : 0)
+	let dc = biquad(Float32Array.from({ length: 96000 }, (_, i) => i < 48000 ? 1 : 0), 48000, 1e-3)
+	let rings = Array.from({ length: 16 }, (_, q) => biquad(tone(48000, 28800, 1, q), 28800, 1e-3 / Math.SQRT2)), q = rings.indexOf(Math.max(...rings))
+	let T0 = tailOf(atom, { sampleRate: 48000, params: { limit: Float32Array.of(0) } })
+	ok(T0 * 48000 >= dc && T0 * 48000 < 2 * dc, `limit 0: ${(T0 * 1e3).toFixed(1)} ms declared; the biquad alone 60 dB under a DC step's end after ${(dc / 48).toFixed(1)} ms`)
+	ok(T0 * 48000 >= rings[q] && T0 - rings[q] / 48000 < .002, `limit 0: ${(T0 * 1e3).toFixed(2)} ms declared; the biquad alone 60 dB under the RMS of a 16.3 Hz tone stopping at phase ${q}π/8 after ${(rings[q] / 48).toFixed(2)} ms, the longest of the 16`)
+	for (let sr of [48000, 44100]) for (let limit of [16, 0]) for (let [what, hold, x, kind] of [
+		[`a 16.3 Hz tone of 0.002 stopping at phase ${q}π/8`, .6, n => tone(sr, n, .002, q).subarray(0, n), 'longest'],
+		['a DC step at −46 dBFS', .3, n => new Float32Array(n).fill(.005), 'step'],
+		['a 312 Hz tone of 0.5', .25, n => Float32Array.from({ length: n }, (_, i) => .5 * Math.sin(2 * Math.PI * 312 * i / sr)), '']]) {
+		let n = Math.round(hold * sr), xs = x(n), label = `${sr} Hz, limit ${limit}, ${what}`, T = tailOf(atom, { sampleRate: sr, params: { limit: Float32Array.of(limit) } })
+		let { y: [y], T: frames } = played(atom, [xs], { sampleRate: sr, params: { limit }, tail: true, more: Math.round(.2 * sr) }, label)
+		ok(T > 0 && frames === Math.round(T * sr), `${label}: the host renders ${frames} frames, the tail ${(T * 1e3).toFixed(2)} ms`)
+		let floor = 1e-3 * rmsOf(xs, 0, n), last = n
+		let loud = s => { for (let i = n + Math.ceil(s * sr); i + 64 <= y.length; i += 64) if (rmsOf(y, i, i + 64) > floor) return i; return -1 }
+		for (let i = n; i + 64 <= y.length; i += 64) if (rmsOf(y, i, i + 64) > floor) last = i + 64
+		is(loud(T), -1, `${label}: 60 dB under the input's RMS from the tail on; the ring ${((last - n) / sr * 1e3).toFixed(1)} ms`)
+		if (kind === 'longest') ok(loud(T - .002) >= 0, `${label}: over it in the 2 ms before the tail`)
+		if (kind === 'step') ok(2 * (last - n) > T * sr, `${label}: the tail within twice its ring`)
+	}
+})
+
+// limit declares no smoothing, so a host hands its jump at the call where it comes, the call split there. The share of
+// the input mixed back then moves in a straight line over 20 ms of samples from that call's first, and each input
+// sample is mixed at the share it came with. At 48 kHz, where the mix is made sample for sample, the output is the two
+// renders held at the limits either side of the jump mixed by that line: the first itself before the call, the second
+// itself from the line's last sample, and between, with music 'enhance' (the output is then the mix itself), within half
+// an ulp of the output's rounding to float32 and half an ulp of the held renders' (2^-23 of the larger), so never
+// louder than both. At 44.1 kHz the converter back reads its taps ahead: the first render itself up to that many
+// frames before the call, the second itself from as many after the line's end, and on these tones over the move never
+// louder than the louder. A share that moves at the next 48 kHz frame instead of the call's first sample, a sample
+// late, or over a line not 20 ms long at the host's rate, fails it
+test('manifest: limit glides: a jump moves the output along a 20 ms line between the two limits held, a latency after the call, never louder than both', async () => {
+	let { rnnoise: atom } = await import('./audio.js'), n = 49152, at = 22016
+	for (let sr of [48000, 44100]) for (let [from, to, hz] of [[1, 100, 220], [16, 0, 1000]]) {
+		let x = [Float32Array.from({ length: n }, (_, i) => .5 * Math.sin(2 * Math.PI * hz * i / sr))], label = `${sr} Hz, a ${hz} Hz tone, music 'enhance', limit ${from} → ${to}`
+		let play = (limit, more) => played(atom, x, { sampleRate: sr, params: { limit, music: 'enhance' }, ...more }, more ? label : `${label}, held at ${limit}`).y[0]
+		let A = play(from), B = play(to), y = play(from, { moves: [[at, { limit: to }]] })
+		// at 44.1 kHz the converter back reads its Lanczos taps ahead: resample-sinc's 16 a side widened by 48/44.1 at
+		// 48 kHz, 18, which are 16.5 at 44.1 kHz
+		let N = Math.round(.02 * sr), ahead = sr === 48000 ? 0 : Math.ceil(Math.ceil(16 * 48000 / sr) * sr / 48000), first = -1, last = -1, off = 0, peak = 0, held = 0
+		for (let i = 0; i < n; i++) {
+			if (first < 0 && !Object.is(y[i], A[i])) first = i
+			if (!Object.is(y[i], B[i])) last = i
+			let w = Math.min(1, Math.max(0, (i - at + 1) / N)), M = Math.max(Math.abs(A[i]), Math.abs(B[i]))
+			if (Math.abs(y[i] - (A[i] + w * (B[i] - A[i]))) > 2 ** -23 * M) off++
+			if (i >= at - ahead && i < at + N + ahead) { peak = Math.max(peak, Math.abs(y[i])); held = Math.max(held, M) }
+		}
+		ok(first >= at - ahead, `${label}: the output moves from ${first - at} frames after the call, aligned by the latency (${ahead} read ahead)`)
+		ok(last < at + N - 1 + ahead, `${label}: the render held at ${to} from ${last + 1 - at} frames after the call, the line ${N} long`)
+		if (sr === 48000) is(off, 0, `${label}: the two held renders mixed by the line, within 2^-23 of the larger in 'enhance', at every sample`)
+		ok(peak <= held, `${label}: its peak over the move ${peak.toFixed(5)}, the louder held ${held.toFixed(5)}`)
+	}
+})
+
+// A jump of limit gives the same samples whatever calls carry it and those before it: the share moves by the samples
+// (audio.js slide()), so a host that cuts the stream into calls of 1, 8, 31 or 33 frames, or of 1 to 128 at random,
+// gives what one in calls of 128 gives, bit for bit, on and off the 32-frame grid. A glide that takes its length or
+// its steps from the calls fails it
+test('manifest: a jump of limit gives the same samples whatever the calls that carry it and those before it', async () => {
+	let { rnnoise: atom } = await import('./audio.js'), n = 26000, s = 5, rnd = () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0) / 2 ** 32
+	for (let sr of [48000, 44100]) for (let [from, to, at] of [[25, 75, 22016], [16, 0, 22077]]) {
+		let x = [Float32Array.from({ length: n }, (_, i) => .5 * Math.sin(2 * Math.PI * 1000 * i / sr))], label = `${sr} Hz, limit ${from} → ${to} at frame ${at}`
+		let opts = { sampleRate: sr, params: { limit: from, music: 'enhance' }, moves: [[at, { limit: to }]] }, ref = played(atom, x, { ...opts, block: 128 }, `${label}, calls of 128`).y[0]
+		for (let [k, calls] of [[1, { block: 1 }], [8, { block: 8 }], [31, { block: 31 }], [33, { block: 33 }], ['1 to 128 at random', { block: 128, cut: () => 1 + Math.floor(rnd() * 128) }]]) {
+			let y = played(atom, x, { ...opts, ...calls }, `${label}, calls of ${k}`).y[0], off = 0
+			for (let i = 0; i < n; i++) if (!Object.is(y[i], ref[i])) off++
+			is(off, 0, `${label}: calls of ${k} frames give the samples calls of 128 give`)
+		}
+	}
+})
+
+// A value that comes while a line moves starts a line of its own from the share then in force, the last sample's
+// (audio.js slide()). At 48 kHz each output sample is the input mixed back at the share its input sample came with, so
+// it is affine in that share: the render at share a is P + (a − p)/(q − p)·(Q − P), P and Q the renders held at shares
+// p and q. Here limit 1 → 100 at `at`, then 16 half a line later: each sample's share is computed below from the two
+// lines, the second from where the first is when 16 comes; before `at` the output is P itself, and from the second
+// line's last sample on the render held at 16. On a band the guard passes, with music 'enhance' the output is that mix
+// within half an ulp of its rounding to float32 and half an ulp of P's and Q's (2^-23 of the larger); with music
+// switched to 'pass' before the jump, so that the lines fall in the guard's 200 ms ramp, its blend g·z + (1 − g)·x
+// (z the mix, x the input) rounds once more, and g·|z| ≤ |y| + |x| bounds what z's rounding adds: within 2^-23 of
+// twice the larger plus the input's sample. A second line from the first one's target, not from where the share is,
+// fails it: a step when the value comes
+test('manifest: a value of limit that comes while a line moves starts a line from the share in force, at 48 kHz in \'enhance\' and in the guard\'s ramp', async () => {
+	let { rnnoise: atom } = await import('./audio.js'), sr = 48000, N = Math.round(.02 * sr), sw = 72000, at = sw + 1061, at2 = at + N / 2, n = at2 + 2 * N
+	let x = [band(n / sr)], share = v => v ? 10 ** (-v / 20) : 0, p = share(1), q = share(100), r = share(16)
+	// the share each input sample comes with: p; from `at` a line toward q; from at2 a line from where that one is toward r
+	let mid = p + (q - p) * ((at2 - at) / N), a = i => i < at ? p : i < at2 ? p + (q - p) * ((i - at + 1) / N) : i - at2 + 1 < N ? mid + (r - mid) * ((i - at2 + 1) / N) : r
+	let enhanced
+	for (let music of ['enhance', 'pass']) {
+		let base = music === 'pass' ? [[sw, { music: 'pass' }]] : [], label = `48000 Hz, a band, music ${music === 'pass' ? `'enhance', 'pass' from frame ${sw}` : `'enhance'`}, limit 1 → 100 at frame ${at}, 16 at ${at2}`
+		let play = (limit, moves) => played(atom, x, { params: { limit, music: 'enhance' }, moves: [...base, ...moves] }, moves.length ? label : `${label}, held at ${limit}`).y[0]
+		let P = play(1, []), Q = play(100, []), R = play(16, []), y = play(1, [[at, { limit: 100 }], [at2, { limit: 16 }]]), first = -1, last = -1, off = 0, worst = 0, ramp = 0
+		for (let i = 0; i < n; i++) {
+			if (first < 0 && !Object.is(y[i], P[i])) first = i
+			if (!Object.is(y[i], R[i])) last = i
+			let big = Math.max(Math.abs(P[i]), Math.abs(Q[i])), e = Math.abs(y[i] - (P[i] + (a(i) - p) / (q - p) * (Q[i] - P[i]))), bound = 2 ** -23 * (music === 'pass' ? 2 * big + Math.abs(x[0][i]) : big)
+			if (e > bound) off++
+			if (big) worst = Math.max(worst, e / big)
+			// the guard's gain neither 1 (P the 'enhance' render's) nor 0 (P the input)
+			if (music === 'pass' && i >= at && i < at2 + N && P[i] !== enhanced[i] && P[i] !== x[0][i]) ramp++
+		}
+		if (music === 'enhance') enhanced = P
+		else is(ramp, at2 + N - at, `${label}: the lines in the guard's ramp, its gain between 0 and 1 at each of their ${at2 + N - at} samples`)
+		ok(first >= at, `${label}: the output moves from ${first - at} frames after the first value`)
+		ok(last < at2 + N - 1, `${label}: the render held at 16 from ${last + 1 - at2} frames after the second value, the line ${N} long`)
+		is(off, 0, `${label}: the held renders mixed by the two lines' shares, ${music === 'pass' ? 'within 2^-23 of twice the larger plus the input\'s sample' : 'within 2^-23 of the larger'}, at every sample (at most ${(worst / 2 ** -23).toFixed(2)}·2^-23 of the larger)`)
+	}
+})
+
+// Two instances, each with its own state: a host that holds two calls them in turn, each with its own setting, calls
+// and moves of limit, and each gives what it gives made alone, bit for bit. One instance's glide or channel state
+// reached from another's calls fails it
+test('manifest: two instances called in turn, their limits moving apart, each give what each gives alone', async () => {
+	let { rnnoise: atom } = await import('./audio.js'), n = 24000, speech = k => IN[k].subarray(0, n).map(v => v / 32768)
+	let one = [[Float32Array.from({ length: n }, (_, i) => .5 * Math.sin(2 * Math.PI * 1000 * i / 48000))], { params: { limit: 16, music: 'enhance' }, moves: [[12000, { limit: 0 }], [12400, { limit: 40 }]] }]
+	let two = [[speech('lena+noise'), speech('lena')], { params: { limit: 1 }, moves: [[12077, { limit: 100 }]], block: 37 }]
+	let hs = [one, two].map(([x, opts]) => hosting(atom, x, opts)), r = hs.map(h => h.next())
+	// both built, then one call of each in turn until both are done
+	while (r.some(s => !s.done)) r = r.map((s, k) => s.done ? s : hs[k].next())
+	for (let [k, [x, opts]] of [one, two].entries()) {
+		let alone = played(atom, x, opts, `instance ${k + 1} alone`).y, off = 0
+		alone.forEach((c, ch) => { for (let i = 0; i < c.length; i++) if (!Object.is(r[k].value.y[ch][i], c[i])) off++ })
+		is(off, 0, `instance ${k + 1}: called in turn with the other, the samples it gives alone`)
+	}
+})
+
+// At other rates the mix is made at 48 kHz and the converter back reads its Lanczos taps either side, so a line's
+// corners spread over them and a sample can pass both held renders. On a full-scale square at 3 kHz, DC of 0.5 and a
+// tone of 0.5 near the band's edge (0.45 of the rate, or of 48 kHz above it), in 'enhance', over a jump to or from 0:
+// the peak from 200 frames before the call to 200 after the line's end passes the louder held render's peak there by
+// at most 0.01 dB, at 8, 16, 22.05, 44.1 and 96 kHz
+test('manifest: limit glides at other rates, a jump to or from 0 at most 0.01 dB over the louder held peak', async () => {
+	let { rnnoise: atom } = await import('./audio.js')
+	for (let sr of [8000, 16000, 22050, 44100, 96000]) {
+		let N = Math.round(.02 * sr), at = 128 * Math.round(.4 * sr / 128) + 61, n = at + N + Math.round(.1 * sr), e = .45 * Math.min(sr, 48000), worst = -Infinity, which
+		for (let [what, f] of [['a full-scale square at 3 kHz', i => Math.sin(2 * Math.PI * 3000 * i / sr + .1) >= 0 ? 1 : -1], ['DC of 0.5', () => .5], [`a ${Math.round(e)} Hz tone of 0.5`, i => .5 * Math.sin(2 * Math.PI * e * i / sr)]]) {
+			let x = [Float32Array.from({ length: n }, (_, i) => f(i))], held = {}, play = (limit, moves = []) => host(atom, x, { sampleRate: sr, params: { limit, music: 'enhance' }, moves }).y[0]
+			for (let [from, to] of [[1e-6, 0], [0, 1e-6], [16, 0]]) {
+				let A = held[from] ??= play(from), B = held[to] ??= play(to), y = play(from, [[at, { limit: to }]]), peak = 0, loud = 0
+				for (let i = at - 200; i < at + N + 200; i++) { peak = Math.max(peak, Math.abs(y[i])); loud = Math.max(loud, Math.abs(A[i]), Math.abs(B[i])) }
+				let over = 20 * Math.log10(peak / loud)
+				if (over > worst) { worst = over; which = `${what}, limit ${from} → ${to}` }
+			}
+		}
+		ok(worst <= .01, `${sr} Hz: the peak over a move at most ${worst.toFixed(4)} dB over the louder held (${which})`)
+	}
 })
 
 // ------------------------------------------------ DeepFilterNet3
@@ -309,25 +675,41 @@ test('deepfilter: the voice guard keeps a held vowel a model would remove, and n
 	ok(span(y, 0, 40000) < -200 && span(y, 152000, x.length) < -200, 'the noise around it: removed')
 })
 
-// a perfect model (y the voice, a 220 Hz tone) and white noise `db` dB under the voice: how far under the voice
-// mixback() leaves the noise
-test('deepfilter: mixback() drops quiet noise by the limit and takes loud noise down to the floor under the voice, frame by frame', () => {
-	let n = 4 * 48000, s = Float32Array.from({ length: n }, (_, i) => .1 * Math.sin(2 * Math.PI * 220 * i / 48000)), w = white(n, 1, 3)
-	let k = db => .1 / Math.SQRT2 * 10 ** (-db / 20) * Math.sqrt(12), under = (r, a = 0, b = n) => span(s, a, b) - span(r, a, b)
-	let left = (db, o) => under(mixback(s.map((v, i) => v + k(db) * w[i]), s, o).map((v, i) => v - s[i]))
-	ok(Math.abs(left(40) - 58) < .2, `noise 40 dB under the voice: ${left(40).toFixed(1)} dB under, the limit's 18 dB down`)
-	ok(Math.abs(left(25) - 43) < .2, `25 dB under: ${left(25).toFixed(1)}, 18 down`)
-	ok(Math.abs(left(10) - FLOOR) < .2, `10 dB under: ${left(10).toFixed(1)}, at the floor (${FLOOR})`)
-	ok(Math.abs(left(-5) - FLOOR) < .2, `5 dB over: ${left(-5).toFixed(1)}, at the floor`)
-	ok(Math.abs(left(10, { floor: 0 }) - 28) < .2 && Math.abs(left(10, { floor: 30 }) - 30) < .2, 'floor 0: 18 dB down, as before 0.5; floor 30: 30 under')
-	ok(Math.abs(left(40, { limit: 6 }) - 46) < .2 && Math.abs(left(10, { limit: 6 }) - FLOOR) < .2, 'limit 6: quiet noise 6 dB down, loud noise at the floor')
+// a perfect model (y the voice, a 220 Hz tone for 4.5 s, then 3.5 s of pause: the voice's level the tone's, the louder
+// half of the frames all tone) and white noise `db` dB under the voice: how far under the voice mixback() leaves the
+// noise, under the voice (0.2-4.2 s) and in its pause, from 0.8 s past it (REACH, 0.3 s, and the noise's 0.5 s clear)
+test('deepfilter: mixback() drops quiet noise by the limit; loud noise in the voice\'s pauses down to the floor under it, under the voice by the limit', () => {
+	let n = 8 * 48000, t = 4.5 * 48000, s = Float32Array.from({ length: n }, (_, i) => i < t ? .1 * Math.sin(2 * Math.PI * 220 * i / 48000) : 0), w = white(n, 1, 3)
+	let k = db => .1 / Math.SQRT2 * 10 ** (-db / 20) * Math.sqrt(12), V = span(s, 0, t), under = (r, a, b) => V - span(r, a, b), near = (a, b, e = .2) => Math.abs(a - b) < e
+	let left = (db, o) => { let r = mixback(s.map((v, i) => v + k(db) * w[i]), s, o).map((v, i) => v - s[i]); return [under(r, 9600, 201600), under(r, 254400, n)] }
+	let [v40, p40] = left(40), [v25, p25] = left(25), [v10, p10] = left(10), [vo, po] = left(-5)
+	ok(near(v40, 58) && near(p40, 58), `noise 40 dB under the voice: ${v40.toFixed(1)} and ${p40.toFixed(1)} dB under, the limit's 18 dB down`)
+	ok(near(v25, 43) && near(p25, 43), `25 dB under: ${v25.toFixed(1)} and ${p25.toFixed(1)}, 18 down`)
+	ok(near(v10, 28) && near(p10, FLOOR), `10 dB under: under the voice ${v10.toFixed(1)}, 18 down; in its pause ${p10.toFixed(1)}, at the floor (${FLOOR})`)
+	ok(near(vo, 13) && near(po, FLOOR), `5 dB over: under the voice ${vo.toFixed(1)}, 18 down; in its pause ${po.toFixed(1)}, at the floor`)
+	ok(near(left(10, { floor: 0 })[1], 28) && near(left(10, { floor: 30 })[1], 30), 'floor 0: 18 dB down, as before 0.5; floor 30: 30 under')
+	let [v6, p6] = left(10, { limit: 6 })
+	ok(near(left(40, { limit: 6 })[1], 46) && near(v6, 16) && near(p6, FLOOR), 'limit 6: quiet noise 6 dB down; loud noise 6 down under the voice, at the floor in its pause')
 	is(maxDiff(mixback(s.map((v, i) => v + w[i]), s, { limit: 0 }), s), 0, 'limit 0: the model\'s output')
-	// loud noise for 2 s, then quiet: each as above, 0.5 s from the change
-	let x = s.map((v, i) => v + k(i < n / 2 ? 10 : 40) * w[i]), r = mixback(x, s).map((v, i) => v - s[i])
-	let a = under(r, 0, 72000), b = under(r, 120000, n)
-	ok(Math.abs(a - FLOOR) < .3 && Math.abs(b - 58) < .3, `the noise drops 30 dB: ${a.toFixed(1)} then ${b.toFixed(1)} dB under the voice`)
+	// in the pause, loud noise to 6.5 s, then quiet: each as above, 0.5 s from the change
+	let x = s.map((v, i) => v + k(i < 6.5 * 48000 ? 10 : 40) * w[i]), r = mixback(x, s).map((v, i) => v - s[i])
+	let a = under(r, 254400, 288000), b = under(r, 336000, n)
+	ok(near(a, FLOOR, .3) && near(b, 58, .3), `the noise drops 30 dB: ${a.toFixed(1)} then ${b.toFixed(1)} dB under the voice`)
 	let y = s.slice(); y.set(x.subarray(0, 48000))
 	is(maxDiff(mixback(x, y).subarray(0, 48000), x.subarray(0, 48000)), 0, 'where input and output agree (music passed): the input, bit for bit')
+})
+
+// a model that takes the voice in places, as DeepFilterNet3 does at low SNR: y the tone with its first 0.2 s of every
+// 0.5 s gone, the input under white noise 10 dB down. Whatever the noise, the voice it took comes back as the limit
+// says, 18 dB down, 6 at 6; 0.7 took it down with the noise, to the floor, and gave 6 and 18 the same output.
+test('deepfilter: mixback() gives back the voice a model took by the limit, the noise near it or not', () => {
+	let n = 4 * 48000, s = Float32Array.from({ length: n }, (_, i) => .1 * Math.sin(2 * Math.PI * 220 * i / 48000)), w = white(n, 1, 3)
+	let x = s.map((v, i) => v + .1 / Math.SQRT2 * 10 ** (-10 / 20) * Math.sqrt(12) * w[i]), y = s.map((v, i) => (i / 48000) % .5 < .2 ? 0 : v)
+	// the voice in the output where the model took it: its projection on the tone over the middle 0.1 s of each gap from
+	// the second, dB re the tone
+	let back = z => { let p = 0, q = 0; for (let g = 1; g < 8; g++) for (let i = g * 24000 + 2400; i < g * 24000 + 7200; i++) { p += z[i] * s[i]; q += s[i] * s[i] } return 20 * Math.log10(p / q) }
+	let d18 = back(mixback(x, y)), d6 = back(mixback(x, y, { limit: 6 }))
+	ok(Math.abs(d18 + 18) < .5 && Math.abs(d6 + 6) < .5, `the voice taken comes back ${d18.toFixed(1)} dB at the default limit, ${d6.toFixed(1)} at 6`)
 })
 
 test('deepfilter: bandEdge() finds the band an input fills, at its own rate', () => {
@@ -493,6 +875,16 @@ test('guard: the stream decides from what has arrived: RNNoise\'s output to fram
 	ok(maxDiff(u, v) > .01, 'different after')
 })
 
+test('guard: the stream\'s decision takes its frame as a range of a longer array, as the manifest hands it (no view made), and decides as on the frame itself', async () => {
+	let nn = await guardNet(), x = band(4), a = online(nn), b = online(nn), same = true, flips = 0, last = false
+	for (let i = 0; i < x.length; i += 480) {
+		let p = a(x.subarray(i, i + 480)), q = b(x, i, i + 480)
+		same &&= p === q; flips += p !== last; last = p
+	}
+	ok(same, 'the same decision every frame')
+	is(flips, 1, 'the band switches it to music, once')
+})
+
 test('guard: noisy speech is enhanced, no frame passed: VoiceBank+DEMAND training utterances (skipped without them)', async () => {
 	if (!existsSync(VB)) return console.log('  (no VoiceBank+DEMAND in ~/.cache/audiojs/data: skipped)')
 	let nn = await guardNet(), files = readdirSync(VB).filter(f => f.endsWith('.wav')).sort().filter((_, i) => i % 25 === 0)
@@ -533,6 +925,36 @@ test('manifest: with music passing, the stream is denoise() sample for sample at
 	}
 })
 
+// The input delayed by the latency, which is what passes, waits in a ring that holds the latency and a whole block: in
+// blocks of maxBlockSize (4096, hosted()'s) it is as full as it gets, and a ring half that size gave back the wrong
+// samples for 3156 to 4916 of them where music passed
+test('manifest: with music passing in blocks of maxBlockSize (4096), the stream is denoise() sample for sample at 48 kHz, and at 44.1 kHz but the last 50 ms', async () => {
+	for (let sr of [48000, 44100]) {
+		let a = band(3, sr), b = IN['lena+noise'].subarray(0, 2 * sr).map(v => v / 32768), x = new Float32Array(a.length + b.length + a.length)
+		x.set(a); x.set(b, a.length); x.set(a, a.length + b.length)
+		let { out: [y] } = await hosted(sr, [x], 16, () => 4096), cut = sr === 48000 ? x.length : x.length - sr / 20
+		is(maxDiff(y.subarray(0, cut), (await denoise(x, { sampleRate: sr })).subarray(0, cut)), 0, `${sr} Hz: equal to denoise()`)
+		is(maxDiff(y.subarray(Math.round(2.5 * sr), a.length), x.subarray(Math.round(2.5 * sr), a.length)), 0, `${sr} Hz: the band passes`)
+	}
+})
+
+test('manifest: its imports stop short of DeepFilterNet3 and the ONNX runtime, whose code writes `this` (the compiler to WebAssembly refused the manifest for it); weights() from rnnoise.js, the same bytes', async () => {
+  // the modules the manifest reaches by static import within this package
+  let seen = new Set(), bare = new Set()
+  let walk = url => {
+    if (seen.has(url.href)) return
+    seen.add(url.href)
+    for (let [, spec] of readFileSync(url, 'utf8').matchAll(/^\s*(?:import|export)\s[^'"]*?from\s*['"]([^'"]+)['"]/gm))
+      spec.startsWith('.') ? walk(new URL(spec, url)) : bare.add(spec)
+  }
+  walk(new URL('./audio.js', import.meta.url))
+  let files = [...seen].map(h => path.basename(new URL(h).pathname))
+  ok(!files.includes('denoise.js') && !files.includes('deepfilter.js'), `audio.js reaches ${files.join(', ')}`)
+  ok(![...bare].some(b => b.includes('neural-runtime') || b.includes('onnxruntime')), `and ${[...bare].join(', ')}`)
+  let { weights: own } = await import('./rnnoise.js'), a = await own(), b = await weights()
+  ok(a.length === 3544320 && a.every((v, i) => v === b[i]), 'the bundled weights, as denoise.js gives them')
+})
+
 test('denoise: empty, one sample, shorter than a frame, silence: the same length back, finite, silence kept (both models)', async () => {
 	let dfn = await load('deepfilternet3', { weights: EXPORT, session: standIn() }), rnn = await load()
 	for (let [name, model] of [['rnnoise', rnn], ['deepfilternet3', dfn]]) for (let rate of [48000, 16000]) {
@@ -568,4 +990,26 @@ test('deepfilternet3: enhance() with upstream\'s settings against Python DeepFil
 		let u = await denoise(x, { sampleRate: 48000, model: m, limit: 0, chunk: Infinity, music: 'enhance' }), v = await enhance(x, m.net, { chunk: Infinity, gain: 10 ** ((-20 - lvl) / 20), voice: true })
 		ok(maxDiff(u, v) < 1e-6, `denoise() = enhance() heard at -20 dBFS (the speech at ${lvl.toFixed(1)}) with the voice guard`)
 	} finally { m.free() }
+})
+
+// A voice through a telephone channel's band (300-3400 Hz, ITU-T G.712's passband: 4th-order Butterworth high- and
+// low-pass, RBJ biquads) under white noise through it 10 dB down (re the voice's active level, its 20 ms frames within
+// 40 dB of the loudest), as radio and phone takes carry it: VoiceBank+DEMAND's clean p232_003 (Valentini-Botinhao 2017,
+// CC BY 4.0). At the default limit the voice loses no more than the limit: no more than 1 % of its 20 ms frames within
+// 20 dB of its level (the louder half of those frames) more than 21 dB under it in the output. The model unlimited
+// leaves 12 of those 188 frames under that, and so did 0.7's default, whose floor took the voice the model took down
+// with the noise; now none
+test('deepfilternet3: denoise() keeps a telephone-band voice under noise 10 dB down within its limit (skipped without the model or VoiceBank+DEMAND)', MODEL_RUN, async () => {
+	let file = path.join(VB, '..', '..', 'vbdemand', 'clean_testset_wav', 'p232_003.wav')
+	if (!HAS_DFN || !existsSync(file)) return console.log('  (no DeepFilterNet3 export or VoiceBank+DEMAND test set in the cache: skipped)')
+	let bq = (x, hp, f0, Q) => { let w = 2 * Math.PI * f0 / 48000, c = Math.cos(w), al = Math.sin(w) / (2 * Q), a0 = 1 + al, b0 = (hp ? 1 + c : 1 - c) / 2 / a0, b1 = (hp ? -(1 + c) : 1 - c) / a0, a1 = -2 * c / a0, a2 = (1 - al) / a0, x1 = 0, x2 = 0, y1 = 0, y2 = 0; return x.map(v => { let y = b0 * v + b1 * x1 + b0 * x2 - a1 * y1 - a2 * y2; x2 = x1; x1 = v; y2 = y1; y1 = y; return y }) }
+	let band = x => [.5412, 1.3066].reduce((y, Q) => bq(bq(y, true, 300, Q), false, 3400, Q), x)
+	let s = band(wav(file)), n = band(white(s.length, 1, 5)), pw = (z, a, F) => z.subarray(a, a + F).reduce((p, v) => p + v * v, 0) / F
+	let act = [], F = 960
+	for (let a = 0; a + F <= s.length; a += F) act.push(pw(s, a, F))
+	let top = Math.max(...act), on = act.filter(p => p >= top * 1e-4), k = Math.sqrt(on.reduce((p, v) => p + v, 0) / on.length / pw(n, 0, n.length) / 10)
+	let x = s.map((v, i) => v + k * n[i]), y = await denoise(x, { sampleRate: 48000, model: 'deepfilternet3' })
+	let lv = 10 * Math.log10(act.slice().sort((a, b) => b - a).slice(0, act.length >> 1).reduce((p, v) => p + v, 0) / (act.length >> 1)), frames = 0, lost = 0
+	for (let a = 0; a + F <= s.length; a += F) if (10 * Math.log10(pw(s, a, F)) > lv - 20) { frames++; if (10 * Math.log10(pw(y, a, F) / pw(s, a, F)) < -21) lost++ }
+	ok(lost <= frames / 100, `${lost} of ${frames} frames of the voice more than 21 dB under it`)
 })

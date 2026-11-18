@@ -31,6 +31,15 @@ const F = { c06: f(.6), c07: f(.7), c085: f(.85), c09: f(.9), c03: f(.3), c04: f
 	c10001: f(1.0001), c0001: f(.001), c1e12: f(1e-12), hpA0: f(-1.99599), hpA1: f(0.99600),
 	N0: f(952.52801514), N1: f(96.39235687), N2: f(0.60863042), D0: f(952.72399902), D1: f(413.36801147), D2: f(11.88600922) }
 
+// weights() → the bundled weights (upstream's weight blob, 3,544,320 bytes), rnnoise.bin beside this file
+export async function weights() {
+	let url = new URL('./rnnoise.bin', import.meta.url)
+	if (url.protocol === 'file:') return new Uint8Array((await import('node:fs')).readFileSync(url))
+	let res = await fetch(url)
+	if (!res.ok) throw new Error(`neural-denoise: can't fetch ${url}: ${res.status}`)
+	return new Uint8Array(await res.arrayBuffer())
+}
+
 export const FRAME = 480
 // The attenuation limit, dB, that denoise(), the worklet and the audio atom apply unless given one (0:
 // none, upstream's output): the most before the voice itself suffers. Unlimited, the model gates speech
@@ -256,33 +265,47 @@ function sparseSgemv(out, w, idx, N, x) {
 	}
 }
 
-// vec.h tanh_approx: (N0 + N1x² + N2x⁴)x / (D0 + D1x² + D2x⁴), clamped to ±1
-function tanh(x) {
-	let x2 = f(x * x)
-	let num = f(f(f(f(F.N2 * x2) + F.N1) * x2) + F.N0)
-	let den = f(f(f(f(F.D2 * x2) + F.D1) * x2) + F.D0)
-	num = f(f(num * x) / den)
-	return num > 1 ? 1 : num < -1 ? -1 : num
+// vec.h tanh_approx over v[from…to), in place: (N0 + N1x² + N2x⁴)x / (D0 + D1x² + D2x⁴), clamped to ±1. The
+// activations go over arrays, not through a function of a number: V8 boxes a float passed to or returned from a call
+// it does not inline, a new object per value
+function tanhs(v, from, to) {
+	for (let i = from; i < to; i++) {
+		let x = v[i], x2 = f(x * x)
+		let num = f(f(f(f(F.N2 * x2) + F.N1) * x2) + F.N0)
+		let den = f(f(f(f(F.D2 * x2) + F.D1) * x2) + F.D0)
+		num = f(f(num * x) / den)
+		v[i] = num > 1 ? 1 : num < -1 ? -1 : num
+	}
 }
-const sigmoid = x => f(.5 + f(.5 * tanh(f(.5 * x))))
 
-function convLayer(L, out, mem, x, nIn, act, tmp) {
+// vec.h sigmoid_approx, .5 + .5·tanh(.5x), over v[from…to) in place
+function sigmoids(v, from, to) {
+	for (let i = from; i < to; i++) v[i] = f(.5 * v[i])
+	tanhs(v, from, to)
+	for (let i = from; i < to; i++) v[i] = f(.5 + f(.5 * v[i]))
+}
+
+// compute_conv1d: the layer over the input history `mem` and this frame's x, tanh; mem keeps the newest of both
+function convLayer(L, out, mem, x, nIn, tmp) {
 	let keep = L.nIn - nIn
-	tmp.set(mem.subarray(0, keep)); tmp.set(x.subarray(0, nIn), keep)
+	for (let i = 0; i < keep; i++) tmp[i] = mem[i]
+	for (let i = 0; i < nIn; i++) tmp[keep + i] = x[i]
 	computeLinear(L, out, tmp)
-	for (let i = 0; i < L.nOut; i++) out[i] = act(out[i])
-	mem.set(tmp.subarray(nIn, nIn + keep))
+	tanhs(out, 0, L.nOut)
+	for (let i = 0; i < keep; i++) mem[i] = tmp[nIn + i]
 }
 
+// compute_generic_gru: z and r gates, sigmoid; the candidate tanh(input + r ⊙ recurrent); state = z·state + (1 − z)·h.
+// The candidate's argument and then h wait in recur's third part, each value from the same ops as one at a time
 function gruLayer(G, state, x, zrh, recur) {
 	let N = 384
 	computeLinear(G.input, zrh, x)
 	computeLinear(G.recurrent, recur, state)
-	for (let i = 0; i < 2 * N; i++) zrh[i] = sigmoid(f(zrh[i] + recur[i]))
-	for (let i = 0; i < N; i++) {
-		let h = tanh(f(zrh[2 * N + i] + f(recur[2 * N + i] * zrh[N + i]))), z = zrh[i]
-		state[i] = f(f(z * state[i]) + f(f(1 - z) * h))
-	}
+	for (let i = 0; i < 2 * N; i++) zrh[i] = f(zrh[i] + recur[i])
+	sigmoids(zrh, 0, 2 * N)
+	for (let i = 0; i < N; i++) recur[2 * N + i] = f(zrh[2 * N + i] + f(recur[2 * N + i] * zrh[N + i]))
+	tanhs(recur, 2 * N, 3 * N)
+	for (let i = 0; i < N; i++) { let z = zrh[i]; state[i] = f(f(z * state[i]) + f(f(1 - z) * recur[2 * N + i])) }
 }
 
 // ------------------------------------------------ DSP (denoise.c, pitch.c, celt_lpc.c)
@@ -322,10 +345,11 @@ function dct(out, o, x) {
 	}
 }
 
-function innerProd(x, xo, y, yo, n) {
+// celt_inner_prod of x[xo…xo + n) and y[yo…yo + n), into out[o] (no float returned: see tanhs)
+function innerProd(x, xo, y, yo, n, out, o) {
 	let s = 0
 	for (let i = 0; i < n; i++) s = f(s + f(x[xo + i] * y[yo + i]))
-	return s
+	out[o] = s
 }
 
 // xcorr_kernel: four lags at once, the C's rotation of y_0…y_3 kept for the same rounding order
@@ -355,7 +379,7 @@ function pitchXcorr(x, xo, y, yo, xcorr, len, maxPitch) {
 		xcorrKernel(x, xo, y, yo + i, SUM4, len)
 		xcorr[i] = SUM4[0]; xcorr[i + 1] = SUM4[1]; xcorr[i + 2] = SUM4[2]; xcorr[i + 3] = SUM4[3]
 	}
-	for (; i < maxPitch; i++) xcorr[i] = innerProd(x, xo, y, yo + i, len)
+	for (; i < maxPitch; i++) innerProd(x, xo, y, yo + i, len, xcorr, i)
 }
 
 // rnn_lpc: Levinson–Durbin, order 4 here, stopping at 30 dB prediction gain
@@ -436,8 +460,8 @@ function pitchSearch(xlp, xo, y, len, maxPitch) {
 	for (let i = 0; i < maxPitch >> 1; i++) {
 		xcorr[i] = 0
 		if (Math.abs(i - 2 * best[0]) > 2 && Math.abs(i - 2 * best[1]) > 2) continue
-		let s = innerProd(xlp, xo, y, i, len >> 1)
-		xcorr[i] = -1 > s ? -1 : s
+		innerProd(xlp, xo, y, i, len >> 1, xcorr, i)
+		if (-1 > xcorr[i]) xcorr[i] = -1
 	}
 	findBestPitch(xcorr, y, 0, len >> 1, maxPitch >> 1, best)
 	let offset = 0
@@ -450,14 +474,16 @@ function pitchSearch(xlp, xo, y, len, maxPitch) {
 }
 
 const SECOND_CHECK = [0, 0, 3, 2, 3, 2, 5, 2, 3, 2, 3, 2, 5, 2, 3, 2]
-const pitchGain = (xy, xx, yy) => f(xy / Math.sqrt(f(1 + f(xx * yy))))
 
-// rnn_remove_doubling: prefer T/k when its correlation holds up; the gain goes to PG[0]
-const YYL = new Float32Array((PMAX >> 1) + 1), PG = new Float32Array(1)
-function removeDoubling(x, T0, prevPeriod, prevGain) {
-	let maxp = PMAX >> 1, minp = PMIN >> 1, N = PFRAME >> 1, o = maxp
-	T0 = (T0 / 2) | 0; prevPeriod = (prevPeriod / 2) | 0
-	if (T0 >= maxp) T0 = maxp - 1
+// rnn_remove_doubling: prefer T/k when its correlation holds up. gain[0]: the previous frame's pitch gain in, this
+// frame's out (compute_pitch_gain, written out at both uses: see tanhs). Each conditional value is computed whether
+// it is chosen or not (the same value when it is): an operation first reached seconds into a stream, where the input
+// first takes that arm (a pitch near the last one, digital silence), has no type feedback, and the optimized
+// function deoptimizes there
+const YYL = new Float32Array((PMAX >> 1) + 1), C3 = new Float32Array(3)
+function removeDoubling(x, T0, prevPeriod, gain) {
+	let maxp = PMAX >> 1, minp = PMIN >> 1, N = PFRAME >> 1, o = maxp, prevGain = gain[0], halfGain = f(.5 * prevGain)
+	T0 = Math.min((T0 / 2) | 0, maxp - 1); prevPeriod = (prevPeriod / 2) | 0
 	let T = T0, xx = 0, xy = 0
 	for (let i = 0; i < N; i++) { xx = f(xx + f(x[o + i] * x[o + i])); xy = f(xy + f(x[o + i] * x[o + i - T0])) }
 	let yyl = YYL, yy = xx
@@ -467,41 +493,46 @@ function removeDoubling(x, T0, prevPeriod, prevGain) {
 		yyl[i] = 0 > yy ? 0 : yy
 	}
 	yy = yyl[T0]
-	let bestXy = xy, bestYy = yy, g0 = pitchGain(xy, xx, yy), g = g0
+	let bestXy = xy, bestYy = yy, g0 = f(xy / Math.sqrt(f(1 + f(xx * yy)))), g = g0
 	for (let k = 2; k <= 15; k++) {
 		let T1 = ((2 * T0 + k) / (2 * k)) | 0
 		if (T1 < minp) break
-		let T1b = k === 2 ? (T1 + T0 > maxp ? T0 : T0 + T1) : ((2 * SECOND_CHECK[k] * T0 + k) / (2 * k)) | 0
+		let sum = T0 + T1, second = ((2 * SECOND_CHECK[k] * T0 + k) / (2 * k)) | 0
+		let T1b = k === 2 ? (sum > maxp ? T0 : sum) : second
 		let a = 0, b = 0
 		for (let i = 0; i < N; i++) { a = f(a + f(x[o + i] * x[o + i - T1])); b = f(b + f(x[o + i] * x[o + i - T1b])) }
-		let xy1 = f(.5 * f(a + b)), yy1 = f(.5 * f(yyl[T1] + yyl[T1b])), g1 = pitchGain(xy1, xx, yy1)
-		let cont = Math.abs(T1 - prevPeriod) <= 1 ? prevGain : Math.abs(T1 - prevPeriod) <= 2 && 5 * k * k < T0 ? f(.5 * prevGain) : 0
-		let th = f(f(F.c07 * g0) - cont); th = F.c03 > th ? F.c03 : th
-		if (T1 < 3 * minp) { th = f(f(F.c085 * g0) - cont); th = F.c04 > th ? F.c04 : th }
-		else if (T1 < 2 * minp) { th = f(f(F.c09 * g0) - cont); th = F.c05 > th ? F.c05 : th }
+		let xy1 = f(.5 * f(a + b)), yy1 = f(.5 * f(yyl[T1] + yyl[T1b])), g1 = f(xy1 / Math.sqrt(f(1 + f(xx * yy1))))
+		let d = Math.abs(T1 - prevPeriod), near = 5 * k * k < T0
+		let cont = d <= 1 ? prevGain : d <= 2 && near ? halfGain : 0
+		let th = f(f(F.c07 * g0) - cont), short = f(f(F.c085 * g0) - cont)
+		th = F.c03 > th ? F.c03 : th; short = F.c04 > short ? F.c04 : short
+		// upstream's third threshold (T1 < 2·minp) sits behind the second (T1 < 3·minp), so it is never taken
+		if (T1 < 3 * minp) th = short
 		if (g1 > th) { bestXy = xy1; bestYy = yy1; T = T1; g = g1 }
 	}
 	bestXy = 0 > bestXy ? 0 : bestXy
-	let pg = bestYy <= bestXy ? 1 : f(bestXy / f(bestYy + 1))
-	let c0 = innerProd(x, o, x, o - (T - 1), N), c1 = innerProd(x, o, x, o - T, N), c2 = innerProd(x, o, x, o - (T + 1), N)
-	let offset = f(c2 - c0) > f(F.c07 * f(c1 - c0)) ? 1 : f(c0 - c2) > f(F.c07 * f(c1 - c2)) ? -1 : 0
+	let q = f(bestXy / f(bestYy + 1)), pg = bestYy <= bestXy ? 1 : q
+	innerProd(x, o, x, o - (T - 1), N, C3, 0); innerProd(x, o, x, o - T, N, C3, 1); innerProd(x, o, x, o - (T + 1), N, C3, 2)
+	let c0 = C3[0], c1 = C3[1], c2 = C3[2]
+	let up = f(c2 - c0) > f(F.c07 * f(c1 - c0)), down = f(c0 - c2) > f(F.c07 * f(c1 - c2)), offset = up ? 1 : down ? -1 : 0
 	if (pg > g) pg = g
 	T0 = 2 * T + offset
-	PG[0] = pg
+	gain[0] = pg
 	return T0 < PMIN ? PMIN : T0
 }
 
 // pitch() → { push(frame, search = true) → period, gain, buf }: one 10 ms frame at 48 kHz, int16 scale, as
 // rnn_compute_frame_features searches it over the last 36 ms (PITCH_BUF_SIZE, held in `buf`): the period in
-// samples (60 to 768), `gain` the normalized correlation at it; search false only takes the frame in
+// samples (60 to 768), `gain` the normalized correlation at it; search false only takes the frame in. The gain
+// lives in a typed array, read through the getter: a float written to a field or passed to a call can be a new object
 export function pitch() {
-	let buf = new Float32Array(PBUF), xlp = new Float32Array(PBUF >> 1), track = { buf, period: 0, gain: 0 }
+	let buf = new Float32Array(PBUF), xlp = new Float32Array(PBUF >> 1), gain = new Float32Array(1)
+	let track = { buf, period: 0, get gain() { return gain[0] } }
 	track.push = (x, search = true) => {
 		buf.copyWithin(0, FRAME); buf.set(x, PBUF - FRAME)
 		if (!search) return track.period
 		pitchDownsample(buf, xlp, PBUF)
-		track.period = removeDoubling(xlp, PMAX - pitchSearch(xlp, PMAX >> 1, xlp, PFRAME, PMAX - 3 * PMIN), track.period, track.gain)
-		track.gain = PG[0]
+		track.period = removeDoubling(xlp, PMAX - pitchSearch(xlp, PMAX >> 1, xlp, PFRAME, PMAX - 3 * PMIN), track.period, gain)
 		return track.period
 	}
 	return track
@@ -509,8 +540,10 @@ export function pitch() {
 
 // ------------------------------------------------ denoiser state (DenoiseState)
 
-// create(weights) → { process(input480, output480) → VAD probability }: one 10 ms frame at 48 kHz,
-// samples at int16 scale (±32768), as rnnoise_process_frame. Output lags input by 960 samples.
+// create(weights) → { process(input480, output480) → VAD probability, run, voice }: one 10 ms frame at 48 kHz,
+// samples at int16 scale (±32768), as rnnoise_process_frame. Output lags input by 960 samples. run(input480,
+// output480) is process with no number returned, the probability left in voice[0]: a float a call returns is a
+// new object where V8 does not inline the call, so real-time loops call run.
 export function create(net) {
 	if (!net || !net.gru1) net = model(net)
 	let analysisMem = new Float32Array(FRAME), synthesisMem = new Float32Array(FRAME)
@@ -534,7 +567,9 @@ export function create(net) {
 		for (let i = 0; i < WIN; i++) v[i] = f(v[i] * WINDOW[i])
 	}
 
-	// rnn_compute_frame_features → true when the frame is silent (E < 0.04)
+	// rnn_compute_frame_features → true when the frame is silent (E < 0.04). Upstream clears the features there
+	// (RNN_CLEAR); nothing reads them on a silent frame and the next frame writes all 65, so the clear is left out: a
+	// call first made at the first silence, seconds into a stream, would deoptimize the function there
 	function features(x) {
 		buf.set(analysisMem); buf.set(x, FRAME); analysisMem.set(x)
 		window(buf); rfft(buf, Xr, Xi); bandEnergy(Ex, Xr, Xi)
@@ -554,23 +589,24 @@ export function create(net) {
 			follow = f(a > ly ? a : ly)
 			E = f(E + Ex[i])
 		}
-		if (E < .04) { feat.fill(0); return true }
+		if (E < .04) return true
 		dct(feat, 0, Ly)
 		feat[0] = f(feat[0] - 12); feat[1] = f(feat[1] - 4)
 		return false
 	}
 
+	// the band gains into g, the voice probability into vad[0]
 	function network() {
-		convLayer(net.conv1, t1, conv1, feat, NF, tanh, tmp)
-		convLayer(net.conv2, cat, conv2, t1, 128, tanh, tmp)
+		convLayer(net.conv1, t1, conv1, feat, NF, tmp)
+		convLayer(net.conv2, cat, conv2, t1, 128, tmp)
 		gruLayer(net.gru1, h1, cat, zrh, recur)
 		gruLayer(net.gru2, h2, h1, zrh, recur)
 		gruLayer(net.gru3, h3, h2, zrh, recur)
 		cat.set(h1, 384); cat.set(h2, 768); cat.set(h3, 1152)
 		computeLinear(net.dense, g, cat)
-		for (let i = 0; i < NB; i++) g[i] = sigmoid(g[i])
+		sigmoids(g, 0, NB)
 		computeLinear(net.vad, vad, cat)
-		return sigmoid(vad[0])
+		sigmoids(vad, 0, 1)
 	}
 
 	// rnn_pitch_filter on the delayed frame: add back the pitch-periodic part the gains would remove
@@ -578,10 +614,10 @@ export function create(net) {
 	function pitchFilter() {
 		rf.fill(0); nf.fill(0)
 		for (let i = 0; i < NB; i++) {
-			let e = dExp[i], gi = g[i], v
-			if (e > gi) v = 1
-			else v = f(f(e * e) * f(1 - f(gi * gi))) / (.001 + f(f(gi * gi) * f(1 - f(e * e))))
-			v = f(v)
+			// the ratio made whether it is taken or not (see removeDoubling); e is a correlation, within ±1, so its
+			// denominator is .001 or more
+			let e = dExp[i], gi = g[i], w = f(f(e * e) * f(1 - f(gi * gi))) / (.001 + f(f(gi * gi) * f(1 - f(e * e))))
+			let v = f(e > gi ? 1 : w)
 			v = 0 > v ? 0 : v; v = 1 < v ? 1 : v
 			r[i] = f(Math.sqrt(v)) * Math.sqrt(dEx[i] / (1e-8 + dEp[i]))
 		}
@@ -593,8 +629,8 @@ export function create(net) {
 		for (let i = 0; i < FREQ; i++) { dXr[i] = f(dXr[i] * nf[i]); dXi[i] = f(dXi[i] * nf[i]) }
 	}
 
-	// rnnoise_process_frame
-	function process(input, output) {
+	// rnnoise_process_frame, the voice probability into vad[0] (0 for a silent frame)
+	function run(input, output) {
 		// rnn_biquad: DC-blocking high-pass, state updated in double, stored as float
 		let m0 = memHp[0], m1 = memHp[1]
 		for (let i = 0; i < FRAME; i++) {
@@ -604,12 +640,14 @@ export function create(net) {
 			x[i] = yi
 		}
 		memHp[0] = m0; memHp[1] = m1
-		let p = 0
+		// rnnoise_process_frame's vad_prob = 0, which only the network moves: stored every frame, not only on a silent
+		// one, where the store would first be made seconds into a stream
+		vad[0] = 0
 		if (!features(x)) {
-			p = network()
+			network()
 			pitchFilter()
 			for (let i = 0; i < NB; i++) {
-				let gi = g[i] > f(F.c06 * lastg[i]) ? g[i] : f(F.c06 * lastg[i])
+				let cap = f(F.c06 * lastg[i]), gi = g[i] > cap ? g[i] : cap
 				g[i] = gi
 				let v = gi * (dEx[i] + 1e-3) / (Ex[i] + 1e-3)
 				lastg[i] = 1 < v ? 1 : v
@@ -619,11 +657,9 @@ export function create(net) {
 		}
 		irfft(dXr, dXi, buf)
 		window(buf)
-		for (let i = 0; i < FRAME; i++) output[i] = f(buf[i] + synthesisMem[i])
-		synthesisMem.set(buf.subarray(FRAME))
+		for (let i = 0; i < FRAME; i++) { output[i] = f(buf[i] + synthesisMem[i]); synthesisMem[i] = buf[FRAME + i] }
 		dXr.set(Xr); dXi.set(Xi); dPr.set(Pr); dPi.set(Pi); dEx.set(Ex); dEp.set(Ep); dExp.set(Exp)
-		return p
 	}
 
-	return { process, latency: 2 * FRAME }
+	return { process: (input, output) => (run(input, output), vad[0]), run, voice: vad, latency: 2 * FRAME }
 }

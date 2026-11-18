@@ -30,6 +30,8 @@ let words = mergeWords(spans, id => vocab[id], { delimiter: '|', frameDuration: 
 | `facebook/mms-300m`-class checkpoints | **CC-BY-NC 4.0 — non-commercial only** | 1000+ languages, per-language adapter | no — pass `model` explicitly, and only if the license fits your use |
 | `Xenova/wav2vec2-large-xlsr-53-*` community fine-tunes | varies per fine-tune — check that fine-tune's own model card | one language per fine-tune | no |
 
+The licences are the weights' own, as their cards state them ([facebook/wav2vec2-base-960h](https://huggingface.co/facebook/wav2vec2-base-960h): `license: apache-2.0`; [facebook/mms-300m](https://huggingface.co/facebook/mms-300m): CC-BY-NC 4.0); `Xenova/wav2vec2-base-960h`'s card states none. Trained on: wav2vec2-base-960h, LibriSpeech's 960 h (its card; [OpenSLR 12](https://www.openslr.org/12/): CC BY 4.0); mms-300m, "about 500,000 hours of speech data in over 1,400 languages" (its card; their terms not stated).
+
 Pass any wav2vec2-class CTC checkpoint via `opts.model`; the adapter only needs `AutoProcessor` + `AutoTokenizer` + a CTC head it can read logits from. This build of `@huggingface/transformers` has no MMS per-language adapter switching — `opts.language` is accepted for documentation/forward-compatibility but has no effect on `wav2vec2-base-960h`; for another language pass a `model` that is already fine-tuned for it, don't rely on `language` to steer a multilingual checkpoint.
 
 ## Options

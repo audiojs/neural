@@ -4,7 +4,7 @@
 // input: the models' delay is compensated. Music passes through untouched (guard.js) unless music: 'enhance'.
 
 import resample from '@audio/resample-sinc'
-import { model as parseRNNoise, create, FRAME, LIMIT as RNNOISE_LIMIT } from './rnnoise.js'
+import { model as parseRNNoise, create, FRAME, LIMIT as RNNOISE_LIMIT, weights } from './rnnoise.js'
 import { loadDeepFilter, enhance, level, bandEdge, MODEL, LEVEL, LIMIT as DFN_LIMIT, FLOOR } from './deepfilter.js'
 import { guardNet, states, patchOf, offline, online, gains, blend } from './guard.js'
 
@@ -15,14 +15,9 @@ const RATE = 48000, SMOOTH = 0.5
 // the attenuation limit (dB) each model gets when opts.limit is not given; 0 is upstream's output
 const LIMITS = { rnnoise: RNNOISE_LIMIT, deepfilternet3: DFN_LIMIT }
 
-// weights() → the bundled RNNoise weights (upstream's weight blob, 3,544,320 bytes), for the worklet
-export async function weights() {
-	let url = new URL('./rnnoise.bin', import.meta.url)
-	if (url.protocol === 'file:') return new Uint8Array((await import('node:fs')).readFileSync(url))
-	let res = await fetch(url)
-	if (!res.ok) throw new Error(`neural-denoise: can't fetch ${url}: ${res.status}`)
-	return new Uint8Array(await res.arrayBuffer())
-}
+// weights() → the bundled RNNoise weights (upstream's weight blob, 3,544,320 bytes), for the worklet; beside the model in
+// rnnoise.js, so the audio.js manifest reaches them without this module's DeepFilterNet3 and its ONNX runtime
+export { weights } from './rnnoise.js'
 
 let bundled
 // load(model?, opts?) → a handle denoise() reuses: 'rnnoise' (default) or 'deepfilternet3'
@@ -71,14 +66,19 @@ export default async function denoise(audio, opts = {}) {
 }
 
 /**
- * mixback(x, y, { limit, floor, sampleRate }) → y + a·(x − y): the input x mixed back into a model's output y, the noise
- * the model took (x − y) back at gain a. a = 10^(−limit/20), so the noise drops by `limit` dB and room tone stays; where
- * the noise stands higher than `floor` dB under the voice, a falls until it lies there, so noise loud against the voice
- * is not merely turned down. Per 10 ms frame: the noise's mean power over the 0.5 s around it against the voice's
- * level, the louder half of y's 50 ms frames (level()); a interpolated between frames. Where x and y agree (music the
- * guard passed) the output is y bit for bit. limit 0: y itself, the model's whole removal; floor 0: a constant
- * 10^(−limit/20), as before 0.5. denoise() applies it to DeepFilterNet3; `audio`'s deepfilter op to the unlimited
- * output it keeps.
+ * mixback(x, y, { limit, floor, sampleRate }) → y + a·(x − y): the input x mixed back into a model's output y, what the
+ * model took (x − y) back at gain a. a = 10^(−limit/20), so what it took drops by `limit` dB and room tone stays: the
+ * limit is all a voice can lose to the model, which takes some of it for noise at low SNR (DeepFilterNet3 unlimited: a
+ * telephone-band voice under white noise 10 dB down loses 10 dB or more in 7 % of its voiced frames; mixed back by the
+ * default limit and floor, 0.8 %, against 0.7's 5.8 %).
+ * In the voice's pauses, where the noise stands higher than `floor` dB under the voice, a falls until it lies there, so
+ * noise loud against the voice is not merely turned down; under the voice it stays at the limit, since x − y there holds
+ * the voice the model took as well as the noise. The floor as OM-LSA applies its gain floor, under speech absence alone
+ * (Cohen & Berdugo 2001: G_H1^p · G_min^(1−p)): p per 10 ms frame, speech in y (speech()), a = cap^p · floor's^(1−p).
+ * The noise: its mean power over the 0.5 s around each frame, against the voice's level, the louder half of y's 50 ms
+ * frames (level()); a interpolated between frames. Where x and y agree (music the guard passed) the output is y bit for
+ * bit. limit 0: y itself, the model's whole removal; floor 0: a constant 10^(−limit/20), as before 0.5. denoise()
+ * applies it to DeepFilterNet3; `audio`'s deepfilter op to the unlimited output it keeps.
  */
 export function mixback(x, y, { limit = DFN_LIMIT, floor = FLOOR, sampleRate = RATE } = {}) {
 	let n = x.length, out = new Float32Array(n), cap = limit ? 10 ** (-Math.abs(limit) / 20) : 0
@@ -91,16 +91,37 @@ export function mixback(x, y, { limit = DFN_LIMIT, floor = FLOOR, sampleRate = R
 		for (let i = k * F; i < e; i++) s += (x[i] - y[i]) ** 2
 		c[k + 1] = c[k] + s
 	}
-	let voice = 10 ** ((level(y, sampleRate) - Math.abs(floor)) / 10)
+	let lv = level(y, sampleRate), voice = 10 ** ((lv - Math.abs(floor)) / 10), p = speech(y.subarray(0, n), lv, F)
 	for (let k = 0; k < K; k++) {
 		let a = Math.max(0, k - h), b = Math.min(K, k + h + 1)
-		g[k] = Math.min(cap, Math.sqrt(voice / Math.max((c[b] - c[a]) / (Math.min(n, b * F) - a * F), 1e-30)))
+		g[k] = cap ** p[k] * Math.min(cap, Math.sqrt(voice / Math.max((c[b] - c[a]) / (Math.min(n, b * F) - a * F), 1e-30))) ** (1 - p[k])
 	}
 	for (let i = 0; i < n; i++) {
 		let t = i / F - .5, k = Math.min(K - 1, Math.max(0, Math.floor(t))), w = Math.min(1, Math.max(0, t - k))
 		out[i] = y[i] + (k + 1 < K ? g[k] + w * (g[k + 1] - g[k]) : g[k]) * (x[i] - y[i])
 	}
 	return out
+}
+
+// speech(y, lv, F) → per F samples of y (10 ms), 0 to 1: the share of the 50 ms around that is speech, as @audio/vad
+// grows it: within MARGIN dB of the voice's level lv (the weakest phoneme lies some 28 dB under the strongest, Fletcher
+// 1953), gaps up to CLOSURE s inside it (a stop's closure), and REACH s either side (a consonant, a decay). Read off the
+// model's voice, so its pauses are the voice's, whatever noise the input held; a frame the model took inside a word is
+// within CLOSURE of the word.
+const MARGIN = 30, CLOSURE = 0.15, REACH = 0.3
+function speech(y, lv, F) {
+	let n = y.length, K = Math.ceil(n / F), on = new Uint8Array(K), at = new Uint8Array(K), p = new Float64Array(K), min = 10 ** ((lv - MARGIN) / 10)
+	let C = Math.round(CLOSURE * 100), R = Math.round(REACH * 100)
+	for (let k = 0; k < K; k++) {
+		let s = 0, e = Math.min(n, (k + 1) * F)
+		for (let i = k * F; i < e; i++) s += y[i] * y[i]
+		on[k] = s >= min * (e - k * F)
+	}
+	for (let k = 0, last = -Infinity; k < K; k++) if (on[k]) { if (k - last - 1 <= C) on.fill(1, last + 1, k); last = k }
+	for (let k = 0, last = -Infinity; k < K; k++) { if (on[k]) last = k; at[k] = k - last <= R }
+	for (let k = K - 1, next = Infinity; k >= 0; k--) { if (on[k]) next = k; at[k] |= next - k <= R }
+	for (let k = 0; k < K; k++) { let s = 0, m = 0; for (let j = Math.max(0, k - 2); j <= Math.min(K - 1, k + 2); j++) { s += at[j]; m++ } p[k] = s / m }
+	return p
 }
 
 /**
