@@ -29,6 +29,10 @@ const f32 = file => { let b = readFileSync(file); return new Float32Array(b.buff
 const snr = (ref, x) => { let s = 0, e = 0; for (let i = 0; i < ref.length; i++) { s += ref[i] ** 2; e += (ref[i] - x[i]) ** 2 } return 10 * Math.log10(s / e) }
 const maxDiff = (a, b) => { let m = 0; for (let i = 0; i < a.length; i++) m = Math.max(m, Math.abs(a[i] - b[i])); return m }
 const MODEL_RUN = { timeout: 300000 }
+// mixback() on the fixture take below, as the published 0.8.0 (the default) and 0.7.0 (`everywhere`) give it: their
+// SHA-256, printed by `node scripts/floor.mjs fixture <that install's denoise.js>`
+const DEFAULT = 'c05f775d9e550f82e1095f653c5dd45e16aaaef6374b40051c608bfdad47ee13', DEFAULT_6_30 = 'd7fbc9e4947bccbccbfec0cbba4709170c95d833be486d232f6874a0aa6192f8'
+const EVERYWHERE = 'a83a99ede12e517987b9b966e43ca9267d0d974a2d89d3d4e56c6c555f373f23', EVERYWHERE_6_30 = '81ff49c7863c27f786f2ddea0cd575d271c2ae68c65fbcba0c1c144e311c7192'
 
 // frames through the frame API → { out, vad } at int16 scale
 function frames(net, x) {
@@ -726,6 +730,7 @@ test('deepfilter: denoise() limits DeepFilterNet3 to 18 dB unless given a limit;
 	ok(maxDiff(unset, none) > 1e-3, `limit Infinity differs by up to ${maxDiff(unset, none).toExponential(1)}`)
 	is(maxDiff(unset, mixback(x, none)), 0, 'the unlimited output with the input mixed back by mixback()')
 	is(maxDiff(await run({ floor: 0 }), mixback(x, none, { floor: 0 })), 0, 'floor 0: a constant 18 dB')
+	is(maxDiff(await run({ everywhere: true }), mixback(x, none, { everywhere: true })), 0, 'everywhere: as mixback() gives it')
 	m.free()
 })
 
@@ -805,15 +810,31 @@ test('deepfilter: mixback() drops quiet noise by the limit; loud noise in the vo
 
 // a model that takes the voice in places, as DeepFilterNet3 does at low SNR: y the tone with its first 0.2 s of every
 // 0.5 s gone, the input under white noise 10 dB down. Whatever the noise, the voice it took comes back as the limit
-// says, 18 dB down, 6 at 6; 0.7 took it down with the noise, to the floor, and gave 6 and 18 the same output.
+// says, 18 dB down, 6 at 6; `everywhere` takes it down with the noise, to the floor, and gives 6 and 18 the same output.
 test('deepfilter: mixback() gives back the voice a model took by the limit, the noise near it or not', () => {
 	let n = 4 * 48000, s = Float32Array.from({ length: n }, (_, i) => .1 * Math.sin(2 * Math.PI * 220 * i / 48000)), w = white(n, 1, 3)
 	let x = s.map((v, i) => v + .1 / Math.SQRT2 * 10 ** (-10 / 20) * Math.sqrt(12) * w[i]), y = s.map((v, i) => (i / 48000) % .5 < .2 ? 0 : v)
 	// the voice in the output where the model took it: its projection on the tone over the middle 0.1 s of each gap from
 	// the second, dB re the tone
 	let back = z => { let p = 0, q = 0; for (let g = 1; g < 8; g++) for (let i = g * 24000 + 2400; i < g * 24000 + 7200; i++) { p += z[i] * s[i]; q += s[i] * s[i] } return 20 * Math.log10(p / q) }
-	let d18 = back(mixback(x, y)), d6 = back(mixback(x, y, { limit: 6 }))
+	let d18 = back(mixback(x, y)), d6 = back(mixback(x, y, { limit: 6 })), e18 = back(mixback(x, y, { everywhere: true })), e6 = back(mixback(x, y, { everywhere: true, limit: 6 }))
 	ok(Math.abs(d18 + 18) < .5 && Math.abs(d6 + 6) < .5, `the voice taken comes back ${d18.toFixed(1)} dB at the default limit, ${d6.toFixed(1)} at 6`)
+	ok(e18 < -30 && Math.abs(e18 - e6) < .5, `everywhere: ${e18.toFixed(1)} dB at the default limit, ${e6.toFixed(1)} at 6, down with the noise to the floor`)
+})
+
+// The default and `everywhere` held to the published mixes, sample for sample: the perfect model's take above (the
+// tone for 4.5 s, then a pause), the noise 10 dB under the voice to 6.5 s and 40 dB under after, y without the tone's
+// 1.0 to 1.2 s (a stretch the model took) and, from 5 to 7.5 s, one 10 ms frame every 0.4 s of the input's noise 27 dB
+// under the voice (residue within speech()'s 30 dB)
+test('deepfilter: mixback() is 0.8.0\'s mix at its defaults and 0.7.0\'s with everywhere, sample for sample', () => {
+	let n = 8 * 48000, t = 4.5 * 48000, s = Float32Array.from({ length: n }, (_, i) => i < t ? .1 * Math.sin(2 * Math.PI * 220 * i / 48000) : 0), w = white(n, 1, 3)
+	let x = s.map((v, i) => v + .1 / Math.SQRT2 * 10 ** (-(i < 6.5 * 48000 ? 10 : 40) / 20) * Math.sqrt(12) * w[i]), y = s.map((v, i) => i >= 48000 && i < 57600 ? 0 : i >= 240000 && i < 360000 && (i - 240000) % 19200 < 480 ? .1 / Math.SQRT2 * 10 ** (-27 / 20) * Math.sqrt(12) * w[i] : v)
+	is(sha(mixback(x, y)), DEFAULT, 'the default, limit 18 and floor 40: 0.8.0\'s samples')
+	is(sha(mixback(x, y, { limit: 6, floor: 30 })), DEFAULT_6_30, 'limit 6, floor 30: 0.8.0\'s samples')
+	is(sha(mixback(x, y, { everywhere: true })), EVERYWHERE, 'everywhere, limit 18 and floor 40: 0.7.0\'s samples')
+	is(sha(mixback(x, y, { everywhere: true, limit: 6, floor: 30 })), EVERYWHERE_6_30, 'everywhere, limit 6, floor 30: 0.7.0\'s samples')
+	let f0 = mixback(x, y, { floor: 0 })
+	ok(mixback(x, y, { everywhere: true, floor: 0 }).every((v, i) => Object.is(v, f0[i])), 'floor 0: a constant limit either way')
 })
 
 test('deepfilter: bandEdge() finds the band an input fills, at its own rate', () => {

@@ -65,7 +65,7 @@ export default async function denoise(audio, opts = {}) {
 			}
 			if (rate !== RATE) y = fit(resample(y, { from: RATE, to: rate }), ch.length)
 			if (pass) y = mix(y, ch, gains(pass, x.length, dfn), rate)
-			out.push(dfn ? mixback(ch, y, { limit, floor: opts.floor, sampleRate: rate }) : y)
+			out.push(dfn ? mixback(ch, y, { limit, floor: opts.floor, everywhere: opts.everywhere, sampleRate: rate }) : y)
 		}
 		return audio instanceof Float32Array ? out[0] : Array.isArray(audio) ? out : { ...audio, channelData: out, sampleRate: rate }
 	} finally {
@@ -74,22 +74,25 @@ export default async function denoise(audio, opts = {}) {
 }
 
 /**
- * mixback(x, y, { limit, floor, sampleRate }) → y + a·(x − y): the input x mixed back into a model's output y, what the
- * model took (x − y) back at gain a. a = 10^(−limit/20), so what it took drops by `limit` dB and room tone stays: the
- * limit is all a voice can lose to the model, which takes some of it for noise at low SNR (DeepFilterNet3 unlimited: a
- * telephone-band voice under white noise 10 dB down loses 10 dB or more in 7 % of its voiced frames; mixed back by the
- * default limit and floor, 0.8 %, against 0.7's 5.8 %).
+ * mixback(x, y, { limit, floor, everywhere, sampleRate }) → y + a·(x − y): the input x mixed back into a model's output
+ * y, what the model took (x − y) back at gain a. a = 10^(−limit/20), so what it took drops by `limit` dB and room tone
+ * stays: under the voice the limit is all a voice can lose to the model, which takes some of it for noise at low SNR.
  * In the voice's pauses, where the noise stands higher than `floor` dB under the voice, a falls until it lies there, so
  * noise loud against the voice is not merely turned down; under the voice it stays at the limit, since x − y there holds
  * the voice the model took as well as the noise. The floor as OM-LSA applies its gain floor, under speech absence alone
  * (Cohen & Berdugo 2001: G_H1^p · G_min^(1−p)): p per 10 ms frame, speech in y (speech()), a = cap^p · floor's^(1−p).
+ * A pause is where y stays more than MARGIN under its voice: residue the model leaves in a pause, as on most real noise,
+ * reads as speech there and keeps the limit. `everywhere`: p 0 throughout, the floor under the voice too, what the model
+ * took back at one gain. On 66 noisy takes (scripts/floor.mjs) the default leaves the noise 0.3 s or more from the voice
+ * 26.5 dB under it and `everywhere` 32.0, and of the voiced frames 6.7 % lose 10 dB or more of their voice against 9.0 %:
+ * each holds what the other gives up (README, DeepFilterNet3's floor).
  * The noise: its mean power over the 0.5 s around each frame, against the voice's level, the louder half of y's 50 ms
  * frames (level()); a interpolated between frames. Where x and y agree (music the guard passed) the output is y bit for
  * bit. limit Infinity: cap 0, y itself, the model's whole removal; limit 0: cap 1, nothing taken under the voice, and in
  * its pauses only what the floor takes; floor 0: a constant 10^(−limit/20), as before 0.5 (with limit 0, x itself).
  * denoise() applies it to DeepFilterNet3; `audio`'s deepfilter op to the unlimited output it keeps.
  */
-export function mixback(x, y, { limit = DFN_LIMIT, floor = FLOOR, sampleRate = RATE } = {}) {
+export function mixback(x, y, { limit = DFN_LIMIT, floor = FLOOR, everywhere = false, sampleRate = RATE } = {}) {
 	let n = x.length, out = new Float32Array(n), cap = share(limit)
 	// cap 0: what the arithmetic below gives, y + 0·(x − y), y itself
 	if (!cap) { out.set(y.subarray(0, n)); return out }
@@ -101,10 +104,10 @@ export function mixback(x, y, { limit = DFN_LIMIT, floor = FLOOR, sampleRate = R
 		for (let i = k * F; i < e; i++) s += (x[i] - y[i]) ** 2
 		c[k + 1] = c[k] + s
 	}
-	let lv = level(y, sampleRate), voice = 10 ** ((lv - Math.abs(floor)) / 10), p = speech(y.subarray(0, n), lv, F)
+	let lv = level(y, sampleRate), voice = 10 ** ((lv - Math.abs(floor)) / 10), p = everywhere ? null : speech(y.subarray(0, n), lv, F)
 	for (let k = 0; k < K; k++) {
-		let a = Math.max(0, k - h), b = Math.min(K, k + h + 1)
-		g[k] = cap ** p[k] * Math.min(cap, Math.sqrt(voice / Math.max((c[b] - c[a]) / (Math.min(n, b * F) - a * F), 1e-30))) ** (1 - p[k])
+		let a = Math.max(0, k - h), b = Math.min(K, k + h + 1), fl = Math.min(cap, Math.sqrt(voice / Math.max((c[b] - c[a]) / (Math.min(n, b * F) - a * F), 1e-30)))
+		g[k] = p ? cap ** p[k] * fl ** (1 - p[k]) : fl
 	}
 	for (let i = 0; i < n; i++) {
 		let t = i / F - .5, k = Math.min(K - 1, Math.max(0, Math.floor(t))), w = Math.min(1, Math.max(0, t - k))
@@ -116,8 +119,8 @@ export function mixback(x, y, { limit = DFN_LIMIT, floor = FLOOR, sampleRate = R
 // speech(y, lv, F) → per F samples of y (10 ms), 0 to 1: the share of the 50 ms around that is speech, as @audio/vad
 // grows it: within MARGIN dB of the voice's level lv (the weakest phoneme lies some 28 dB under the strongest, Fletcher
 // 1953), gaps up to CLOSURE s inside it (a stop's closure), and REACH s either side (a consonant, a decay). Read off the
-// model's voice, so its pauses are the voice's, whatever noise the input held; a frame the model took inside a word is
-// within CLOSURE of the word.
+// model's output: a frame the model took inside a word is within CLOSURE of the word, and a frame of residue it leaves
+// in a pause within MARGIN of the voice holds the limit REACH either side of it.
 const MARGIN = 30, CLOSURE = 0.15, REACH = 0.3
 function speech(y, lv, F) {
 	let n = y.length, K = Math.ceil(n / F), on = new Uint8Array(K), at = new Uint8Array(K), p = new Float64Array(K), min = 10 ** ((lv - MARGIN) / 10)

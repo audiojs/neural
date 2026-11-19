@@ -41,11 +41,11 @@ export const LIMIT = 18
 // The floor, dB under the voice, to which denoise() takes noise the limit would leave closer to it in the voice's pauses
 // (mixback() in denoise.js; under the voice the limit stands, the voice the model took being in what it removed there):
 // the limit alone keeps room tone, and keeps noise as loud as the voice 18 dB under it. 40 dB under a voice
-// at -20 dBFS is ACX's -60 dBFS floor, which ACX reads in the pauses (the quietest 500 ms). 0.5 to 0.7 took the noise
-// to the floor under the voice too: on audio's bench/rx/isolate.mjs tune split 35, 40 and 45 scored PESQ 1.96, 1.98,
-// 1.98 (0: 1.75), on VoiceBank+DEMAND's training speakers DNSMOS SIG 3.38, 3.36, 3.35 (0: 3.41) (README, Measured);
-// with it, what the model took of a voice went with the noise. In the pauses alone, on VoiceBank+DEMAND's test set
-// (every 8th file, 103): PESQ 2.95 → 2.81, STOI 0.935 → 0.934, SIG 3.42 → 3.47, BAK 4.00 → 3.83, OVRL 3.12 → 3.08.
+// at -20 dBFS is ACX's -60 dBFS floor, which ACX reads in the pauses (the quietest 500 ms). With `everywhere` the floor
+// acts under the voice too; so, on the RX comparison's tune split, 35, 40 and 45 score PESQ 1.96, 1.98, 1.98 (0: 1.75),
+// DNSMOS SIG 3.38, 3.36, 3.35 on VoiceBank+DEMAND's training speakers (0: 3.41) (README, Measured). On every 8th
+// VoiceBank+DEMAND test file (103): PESQ 2.81 and STOI 0.933 at the default, 2.95 and 0.935 with `everywhere`, which
+// takes with the noise the voice the model took (scripts/floor.mjs; README, DeepFilterNet3's floor).
 export const FLOOR = 40
 
 // The level, dBFS, at which denoise() has the network hear the speech (`gain`): the median of the VoiceBank+DEMAND
