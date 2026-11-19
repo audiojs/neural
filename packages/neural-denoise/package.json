@@ -55,6 +55,7 @@
     "ml",
     "neural",
     "denoise",
+    "restoration",
     "noise-suppression",
     "speech-enhancement",
     "rnnoise",
