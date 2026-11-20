@@ -82,10 +82,14 @@ export default async function denoise(audio, opts = {}) {
  * the voice the model took as well as the noise. The floor as OM-LSA applies its gain floor, under speech absence alone
  * (Cohen & Berdugo 2001: G_H1^p · G_min^(1−p)): p per 10 ms frame, speech in y (speech()), a = cap^p · floor's^(1−p).
  * A pause is where y stays more than MARGIN under its voice: residue the model leaves in a pause, as on most real noise,
- * reads as speech there and keeps the limit. `everywhere`: p 0 throughout, the floor under the voice too, what the model
- * took back at one gain. On 66 noisy takes (scripts/floor.mjs) the default leaves the noise 0.3 s or more from the voice
- * 26.5 dB under it and `everywhere` 32.0, and of the voiced frames 6.7 % lose 10 dB or more of their voice against 9.0 %:
- * each holds what the other gives up (README, DeepFilterNet3's floor).
+ * reads as speech there and keeps the limit. And the floor is for the bed: a frame whose noise stands OVER dB or more
+ * over the bed about it (BED, read within AROUND s) holds what no bed explains, a voice the model took whole, and keeps
+ * the limit as well (p 1 there), so a phrase the model removes in a pause comes back `limit` dB down, not at the floor.
+ * A noise that comes and goes keeps the limit too, and a bed that changes level keeps it for AROUND s about the change:
+ * no reading of energy tells either from a voice taken whole. `everywhere`: p 0 throughout, the floor under the voice
+ * too, what the model took back at one gain. On 66 noisy takes (scripts/floor.mjs) the default leaves the noise 0.3 s or
+ * more from the voice 26.0 dB under it and `everywhere` 32.0, and of the voiced frames 6.7 % lose 10 dB or more of their
+ * voice against 9.0 %: each holds what the other gives up (README, DeepFilterNet3's floor).
  * The noise: its mean power over the 0.5 s around each frame, against the voice's level, the louder half of y's 50 ms
  * frames (level()); a interpolated between frames. Where x and y agree (music the guard passed) the output is y bit for
  * bit. limit Infinity: cap 0, y itself, the model's whole removal; limit 0: cap 1, nothing taken under the voice, and in
@@ -104,9 +108,16 @@ export function mixback(x, y, { limit = DFN_LIMIT, floor = FLOOR, everywhere = f
 		for (let i = k * F; i < e; i++) s += (x[i] - y[i]) ** 2
 		c[k + 1] = c[k] + s
 	}
-	let lv = level(y, sampleRate), voice = 10 ** ((lv - Math.abs(floor)) / 10), p = everywhere ? null : speech(y.subarray(0, n), lv, F)
+	let lv = level(y, sampleRate), voice = 10 ** ((lv - Math.abs(floor)) / 10), p = everywhere ? null : speech(y.subarray(0, n), lv, F), N = new Float64Array(K)
+	for (let k = 0; k < K; k++) { let a = Math.max(0, k - h), b = Math.min(K, k + h + 1); N[k] = (c[b] - c[a]) / (Math.min(n, b * F) - a * F) }
+	// the floor is for the bed: p at least the share of the 50 ms around each frame whose N stands OVER over the bed about
+	// it, the quietest tenth of N within AROUND s either side of each second (no removal there, no bed and nothing over it)
+	if (p) {
+		let H = 100, A = AROUND * 100, over = Array.from({ length: Math.ceil(K / H) + 1 }, (_, j) => { let q = N.subarray(Math.max(0, j * H - A), Math.min(K, j * H + A + 1)).filter(v => v > 0).sort(); return q.length ? q[Math.floor((q.length - 1) * BED)] * 10 ** (OVER / 10) : Infinity })
+		for (let k = 0; k < K; k++) { let s = 0, a = Math.max(0, k - 2), b = Math.min(K, k + 3); for (let j = a; j < b; j++) s += N[j] >= over[Math.round(j / H)]; p[k] = Math.max(p[k], s / (b - a)) }
+	}
 	for (let k = 0; k < K; k++) {
-		let a = Math.max(0, k - h), b = Math.min(K, k + h + 1), fl = Math.min(cap, Math.sqrt(voice / Math.max((c[b] - c[a]) / (Math.min(n, b * F) - a * F), 1e-30)))
+		let fl = Math.min(cap, Math.sqrt(voice / Math.max(N[k], 1e-30)))
 		g[k] = p ? cap ** p[k] * fl ** (1 - p[k]) : fl
 	}
 	for (let i = 0; i < n; i++) {
@@ -115,6 +126,25 @@ export function mixback(x, y, { limit = DFN_LIMIT, floor = FLOOR, everywhere = f
 	}
 	return out
 }
+
+// The bed, for mixback(): BED, the quietest tenth of the noise N (the removal's mean power over the 0.5 s around each
+// frame), digital silence aside, within AROUND s either side of each second; on a take of AROUND s or less, the whole
+// take. Under a voice the model kept, what it takes is the noise too, so the bed is read wherever a tenth of that span
+// holds it, a voice the model took whole filling the pauses or not: on scripts/floor.mjs's 66 takes N stands, at its
+// median, 2.4 dB over it under the voice and 2.1 dB in the noise alone 0.3 s or more from the voice. OVER 6: four times
+// the bed's power. Of those windows of noise alone 18 % stand as far over it and keep the limit (DEMAND's river, field,
+// hallway, washing machine), the far pauses 26.0 dB under the voice against 26.5 without the bed; of a phrase a model
+// takes whole from four VoiceBank test voices joined 0.3 s apart (`audio`'s eval voices), under pink noise 20, 10 and 5
+// dB down, 0, 16 and 50 % of the frames still go to the default floor (98 to 100 % without the bed); at 4.5 dB 0, 4 and
+// 23 %, with 24 % of the noise's windows over it; at 8 dB 1, 29 and 77 %. AROUND 10: a bed that changes level keeps the
+// limit in the 10 s about the change, not in the take's louder part. Those voices three times over under pink noise 15
+// dB down, the bed rising 6 dB halfway through 61 s, at `audio`'s auto stage (floor 60), where the model leaves the
+// pauses clean: the pauses more than 10 s past the rise 37.1 dB under the voice, as without the bed (28.1 with one bed
+// for the take), the 10 s just past it 28.8 (28.2); at 5 s 37.1 and 31.8, at 20 s 32.7 and 28.2. Its price: a voice the
+// model took whole for most of 20 s has less bed about it (a turn of 10 phrases 0.3 s apart under the eval's moving
+// noise 5 dB down: 37 % of it floored, 28 with one bed), and 2 s of quiet room tone leaves the 10 s after it at the
+// limit in a take of any length.
+const BED = 0.1, OVER = 6, AROUND = 10
 
 // speech(y, lv, F) → per F samples of y (10 ms), 0 to 1: the share of the 50 ms around that is speech, as @audio/vad
 // grows it: within MARGIN dB of the voice's level lv (the weakest phoneme lies some 28 dB under the strongest, Fletcher

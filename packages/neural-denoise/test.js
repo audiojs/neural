@@ -800,10 +800,12 @@ test('deepfilter: mixback() drops quiet noise by the limit; loud noise in the vo
 	ok(near(v0, 10) && near(p0, FLOOR) && near(q0, 40) && near(r0, 40), `limit 0: noise 10 dB under the voice ${v0.toFixed(1)} under it, in its pause ${p0.toFixed(1)}, at the floor; 40 under, ${q0.toFixed(1)} and ${r0.toFixed(1)}, as it came`)
 	ok(mixback(noisy, s, { limit: 0, floor: 0 }).every((v, i) => Object.is(v, noisy[i])), 'limit 0 and floor 0: the input itself, sample for sample')
 	for (let limit of [null, NaN, '18']) throws(() => mixback(noisy, s, { limit }), /^TypeError: .*limit is dB/, `limit ${typeof limit === 'string' ? `'${limit}'` : limit}: a TypeError`)
-	// in the pause, loud noise to 6.5 s, then quiet: each as above, 0.5 s from the change
+	// in the pause, loud noise to 6.5 s, then 30 dB quieter, each read 0.5 s from the change: the quiet part is the take's
+	// bed, 18 down; the loud part stands 30 dB over it, as a voice the model took whole would (no reading of energy tells
+	// the two apart), and keeps the limit, 18 down, where 0.8.1 took it to the floor
 	let x = s.map((v, i) => v + k(i < 6.5 * 48000 ? 10 : 40) * w[i]), r = mixback(x, s).map((v, i) => v - s[i])
 	let a = under(r, 254400, 288000), b = under(r, 336000, n)
-	ok(near(a, FLOOR, .3) && near(b, 58, .3), `the noise drops 30 dB: ${a.toFixed(1)} then ${b.toFixed(1)} dB under the voice`)
+	ok(near(a, 28, .3) && near(b, 58, .3), `the noise drops 30 dB: ${a.toFixed(1)} then ${b.toFixed(1)} dB under the voice, the limit's: the loud part stands over the bed as a voice the model took would`)
 	let y = s.slice(); y.set(x.subarray(0, 48000))
 	is(maxDiff(mixback(x, y).subarray(0, 48000), x.subarray(0, 48000)), 0, 'where input and output agree (music passed): the input, bit for bit')
 })
@@ -820,6 +822,57 @@ test('deepfilter: mixback() gives back the voice a model took by the limit, the 
 	let d18 = back(mixback(x, y)), d6 = back(mixback(x, y, { limit: 6 })), e18 = back(mixback(x, y, { everywhere: true })), e6 = back(mixback(x, y, { everywhere: true, limit: 6 }))
 	ok(Math.abs(d18 + 18) < .5 && Math.abs(d6 + 6) < .5, `the voice taken comes back ${d18.toFixed(1)} dB at the default limit, ${d6.toFixed(1)} at 6`)
 	ok(e18 < -30 && Math.abs(e18 - e6) < .5, `everywhere: ${e18.toFixed(1)} dB at the default limit, ${e6.toFixed(1)} at 6, down with the noise to the floor`)
+})
+
+// a model that takes a whole phrase with no voice of its own near (y the tone from 0.2 to 4.2 s; its second phrase, 5 to
+// 6 s, gone), the input under white noise 15 dB down: y is a pause there, but the noise there, what the model took over
+// the 0.5 s around each frame, stands 15 dB over the bed (its quietest tenth; on 8 s, the take's), so the limit holds,
+// as under any voice (0.8.1 floored the phrase with the noise: 39.8 dB down at the default floor, 59.8 at 60). The
+// noise 0.8 s past it (REACH, 0.3 s, and the noise's 0.5 s clear) is the bed, and still goes down to the floor
+test('deepfilter: mixback() gives back a phrase the model took whole by the limit, the input showing it', () => {
+	let n = 8 * 48000, B = [240000, 288000], on = i => i >= 9600 && i < 201600 || i >= B[0] && i < B[1]
+	let s = Float32Array.from({ length: n }, (_, i) => on(i) ? .1 * Math.sin(2 * Math.PI * 220 * i / 48000) : 0), w = white(n, 1, 3)
+	let x = s.map((v, i) => v + .1 / Math.SQRT2 * 10 ** (-15 / 20) * Math.sqrt(12) * w[i]), y = s.map((v, i) => i < B[0] ? v : 0)
+	// the phrase in the output: its projection on the tone over its middle 0.8 s, dB re the tone
+	let back = z => { let p = 0, q = 0; for (let i = B[0] + 4800; i < B[1] - 4800; i++) { p += z[i] * s[i]; q += s[i] * s[i] } return 20 * Math.log10(p / q) }
+	let V = span(s, 9600, 201600), far = z => V - span(z.map((v, i) => v - s[i]), B[1] + 38400, n)
+	for (let floor of [FLOOR, 60]) {
+		let z = mixback(x, y, { floor })
+		ok(Math.abs(back(z) + 18) < .5, `floor ${floor}: the phrase the model took comes back ${back(z).toFixed(1)} dB, the limit's`)
+		ok(Math.abs(far(z) - floor) < .5, `floor ${floor}: the noise in the pause past it ${far(z).toFixed(1)} dB under the voice, the floor`)
+	}
+})
+
+// the same, the model's own voice close on both sides (y keeps the tone 0.2 to 3.0 s and 4.6 to 7.8 s; the phrase, 3.3 to
+// 4.3 s, gone): y's only pause is the phrase, so a bed read over y's pauses would be the phrase itself, nothing standing
+// over it (0.8.1 floors it: 39.8 dB down at the default floor, 59.8 at 60). The bed is read under the voice too,
+// where the model took the noise alone, and the phrase stands 15 dB over it
+test('deepfilter: mixback() gives back a phrase the model took whole between two it kept, by the limit', () => {
+	let n = 8 * 48000, P = [158400, 206400], kept = i => i >= 9600 && i < 144000 || i >= 220800 && i < 374400
+	let s = Float32Array.from({ length: n }, (_, i) => kept(i) || i >= P[0] && i < P[1] ? .1 * Math.sin(2 * Math.PI * 220 * i / 48000) : 0), w = white(n, 1, 3)
+	let x = s.map((v, i) => v + .1 / Math.SQRT2 * 10 ** (-15 / 20) * Math.sqrt(12) * w[i]), y = s.map((v, i) => kept(i) ? v : 0)
+	// the phrase in the output: its projection on the tone over its middle 0.8 s, dB re the tone
+	let back = z => { let p = 0, q = 0; for (let i = P[0] + 4800; i < P[1] - 4800; i++) { p += z[i] * s[i]; q += s[i] * s[i] } return 20 * Math.log10(p / q) }
+	for (let floor of [FLOOR, 60]) {
+		let d = back(mixback(x, y, { floor }))
+		ok(Math.abs(d + 18) < .5, `floor ${floor}: the phrase the model took comes back ${d.toFixed(1)} dB, the limit's`)
+	}
+})
+
+// a bed that rises in a pause: the perfect model's tone 0.2 to 4.2 s, then white noise 20 dB under it that grows 7 dB
+// louder at 15 s of 30 (over OVER's 6, so that the window is read, not the threshold). The bed about each frame is the
+// quietest tenth within AROUND s either side: just past the rise the bed is the quieter noise before it, which the
+// louder stands over as a voice the model took would, and it keeps the limit; more than 10 s past it the bed is the
+// louder noise itself, which goes to the floor as the quieter did (one bed for the take, the quieter, kept the limit to
+// the end)
+test('deepfilter: mixback() reads the bed about each frame: a bed that rises keeps the limit 10 s, then goes to the floor', () => {
+	let n = 30 * 48000, s = Float32Array.from({ length: n }, (_, i) => i >= 9600 && i < 201600 ? .1 * Math.sin(2 * Math.PI * 220 * i / 48000) : 0), w = white(n, 1, 3)
+	let x = s.map((v, i) => v + .1 / Math.SQRT2 * 10 ** (-(i < 720000 ? 20 : 13) / 20) * Math.sqrt(12) * w[i]), d = x.map((v, i) => v - s[i]), r = mixback(x, s).map((v, i) => v - s[i])
+	// over [a, b) s: the noise's depth under the voice in the output, and its drop against the input's
+	let V = span(s, 9600, 201600), under = (a, b) => V - span(r, a * 48000, b * 48000), drop = (a, b) => span(d, a * 48000, b * 48000) - span(r, a * 48000, b * 48000)
+	let before = under(5, 14.5), just = drop(15.5, 20), past = under(25.5, 29.5)
+	ok(Math.abs(just - 18) < .3, `0.5 to 5 s past the rise the noise drops ${just.toFixed(1)} dB, the limit's`)
+	ok(Math.abs(past - before) < .3, `more than 10 s past it ${past.toFixed(1)} dB under the voice, the floor, as before the rise (${before.toFixed(1)})`)
 })
 
 // The default and `everywhere` held to the published mixes, sample for sample: the perfect model's take above (the
